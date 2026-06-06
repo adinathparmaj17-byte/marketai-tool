@@ -1,13 +1,16 @@
 # ============================================================
 #  MarketAI - Free WhatsApp & Email Marketing Tool
 #  HUMAN-LIKE SENDING MODE  -  Anti-Spam by Design
+#  WITH USER AUTHENTICATION & SENDER IDENTIFICATION
 # ============================================================
 #  Features:
+#  - Email/Username login (NO phone required)
 #  - Random delays between messages (30-120 sec like a real person)
 #  - Message variations (not identical copies)
 #  - Random emoji shuffling
 #  - Batch limits per hour
 #  - Business hours only option
+#  - CUSTOMERS SEE WHO SENT THE MESSAGE
 
 import pandas as pd
 import streamlit as st
@@ -16,22 +19,62 @@ import re
 import os
 import random
 import urllib.parse
+import json
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import smtplib
 
 # ─── Page Config ────────────────────────────────────
 st.set_page_config(page_title="MarketAI - Human-Like Sender", page_icon="🤖", layout="wide")
 
-# ─── Session State ──────────────────────────────────
-for v in ["customers", "sent_log", "sending_active"]:
+# ─── USER AUTHENTICATION ─────────────────────────────
+def load_users():
+    """Load users from JSON file"""
+    if os.path.exists("users.json"):
+        with open("users.json", "r") as f:
+            return json.load(f)
+    return {}
+
+def save_users(users):
+    """Save users to JSON file"""
+    with open("users.json", "w") as f:
+        json.dump(users, f)
+
+def authenticate_user(email, password):
+    """Check if user credentials are correct"""
+    users = load_users()
+    if email in users and users[email]["password"] == password:
+        return True
+    return False
+
+def register_user(email, password, business_name):
+    """Register a new user"""
+    users = load_users()
+    if email in users:
+        return False, "Email already registered"
+    users[email] = {
+        "password": password,
+        "business_name": business_name,
+        "created": datetime.now().isoformat()
+    }
+    save_users(users)
+    return True, "Registration successful!"
+
+def get_user_data(email):
+    """Get user business data"""
+    users = load_users()
+    return users.get(email, {})
+
+# ─── SESSION State ──────────────────────────────────
+for v in ["logged_in", "user_email", "customers", "sent_log", "sending_active", "uploaded_filename"]:
     if v not in st.session_state:
         if v == "customers":
             st.session_state[v] = []
         elif v == "sent_log":
             st.session_state[v] = []
-        elif v == "sending_active":
-            st.session_state[v] = False
+        else:
+            st.session_state[v] = None if v != "sending_active" else False
 
 # ─── ANTI-SPAM / HUMAN-LIKE CONFIG ─────────────────
 HUMAN_DELAY_MIN = 30      # Min seconds between messages
@@ -106,31 +149,36 @@ def save_customers(df, mapping):
         })
     return customers
 
-def randomize_message(template, name):
+def randomize_message(template, name, sender_name):
     """Add human-like variation so each message is slightly different."""
     greeting = random.choice(GREETINGS).format(name=name)
     msg = template.replace("{{name}}", name)
+    msg = msg.replace("{{sender}}", sender_name)
     # Sometimes swap the greeting
     if msg.startswith("Hi") or msg.startswith("Hello") or msg.startswith("Hey"):
-        # Replace first line with random greeting
         lines = msg.split("\n", 1)
         if len(lines) > 1:
             msg = greeting + "\n" + lines[1]
+    # Add sender signature
+    msg = msg.strip() + f"\n\n— {sender_name}"
     # Randomly add emoji
     if random.random() > 0.4:
         emojis = ["🎉", "🔥", "💥", "✨", "🎊", "🚀", "💪", "👋", "⭐", "🎯"]
-        msg = msg.strip() + " " + random.choice(emojis)
+        msg = msg + " " + random.choice(emojis)
     return msg
 
-def randomize_email(template, name, subject):
-    """Add slight variations to email."""
+def randomize_email(template, name, subject, sender_name):
+    """Add slight variations to email with sender info."""
     greeting = random.choice(GREETINGS).format(name=name)
     if random.random() > 0.5:
         emojis = ["🎉", "🔥", "✨", "🚀", "💌", "📢"]
         subject = random.choice(emojis) + " " + subject
     body = template.replace("{{name}}", name)
+    body = body.replace("{{sender}}", sender_name)
     body = body.replace("Hi {{name}}", greeting)
     subject = subject.replace("{{name}}", name)
+    # Add sender to email footer
+    body = body + f"\n\n<p><strong>Sent by: {sender_name}</strong></p>"
     return subject, body
 
 def get_human_delay():
@@ -148,18 +196,89 @@ def get_batch_stats(customers):
     sent_day = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > today_start)
     return sent_hr, sent_day
 
+# ─── LOGIN PAGE ─────────────────────────────────────
+if not st.session_state["logged_in"]:
+    st.title("🤖 MarketAI - Login")
+    
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        st.subheader("Login to Your Account")
+        login_email = st.text_input("📧 Email", placeholder="you@example.com")
+        login_password = st.text_input("🔐 Password", type="password")
+        
+        if st.button("Login", use_container_width=True, type="primary"):
+            if authenticate_user(login_email, login_password):
+                st.session_state["logged_in"] = True
+                st.session_state["user_email"] = login_email
+                st.success("✅ Logged in successfully!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid email or password")
+    
+    with tab2:
+        st.subheader("Create New Account")
+        reg_email = st.text_input("📧 Email", placeholder="you@example.com", key="reg_email")
+        reg_password = st.text_input("🔐 Password", type="password", key="reg_pass")
+        reg_business = st.text_input("🏢 Business Name", placeholder="Your Company Name")
+        
+        if st.button("Register", use_container_width=True, type="primary"):
+            if not reg_email or not reg_password or not reg_business:
+                st.error("Please fill all fields")
+            elif len(reg_password) < 6:
+                st.error("Password must be at least 6 characters")
+            else:
+                success, msg = register_user(reg_email, reg_password, reg_business)
+                if success:
+                    st.success(msg)
+                    st.info("Now login with your credentials!")
+                else:
+                    st.error(msg)
+    
+    st.divider()
+    st.markdown("""
+    <div style="text-align:center;color:gray;font-size:12px;">
+    MarketAI - Send messages with human-like behavior<br>
+    No phone login needed. Email-based authentication only.
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+# ─── LOGGED IN USER AREA ────────────────────────────
+user_data = get_user_data(st.session_state["user_email"])
+sender_name = user_data.get("business_name", "Your Business")
+
+# Logout button in top right
+col1, col2 = st.columns([0.9, 0.1])
+with col2:
+    if st.button("🚪 Logout"):
+        st.session_state["logged_in"] = False
+        st.session_state["user_email"] = None
+        st.session_state["customers"] = []
+        st.rerun()
+
 # ─── SIDEBAR ────────────────────────────────────────
-st.sidebar.title("🤖 MarketAI")
-st.sidebar.caption("Human-Like WhatsApp + Email Sender")
+st.sidebar.title(f"🤖 MarketAI - {sender_name}")
+st.sidebar.caption(f"Logged in as: {st.session_state['user_email']}")
+st.sidebar.divider()
 
 st.sidebar.header("📁 Step 1: Upload Excel")
 uploaded_file = st.sidebar.file_uploader("Choose file", type=["xlsx", "xls", "csv"])
+
+if uploaded_file:
+    st.sidebar.success(f"📄 {uploaded_file.name}")
+    if st.sidebar.button("🗑️ Delete File", use_container_width=True):
+        st.session_state["customers"] = []
+        st.session_state["uploaded_filename"] = None
+        st.session_state["sent_log"] = []
+        st.sidebar.success("✅ File deleted!")
+        st.rerun()
 
 st.sidebar.header("🔧 Step 2: Templates")
 with st.sidebar.expander("📝 Messages", expanded=True):
     whatsapp_template = st.text_area(
         "WhatsApp:", value="Hi {{name}},\n\nThis is a special offer just for you!\n\nVisit us today and get 20% OFF.\n\nReply STOP to opt out.",
-        height=120, help="Use {{name}} for customer name"
+        height=120, help="Use {{name}} for customer name and {{sender}} for your business name"
     )
     email_subject = st.text_input("Email Subject:", value="Special Offer Just for You, {{name}}!")
     email_body = st.text_area(
@@ -168,9 +287,8 @@ with st.sidebar.expander("📝 Messages", expanded=True):
 <p>We have an <strong>exclusive offer</strong> just for you!</p>
 <p>Get <strong>20% OFF</strong> on your next purchase.</p>
 <p><a href="https://yourwebsite.com/offer">Click here to claim</a></p>
-<br><p>Best regards,<br>Your Team</p>
-<p style="font-size:12px;color:gray;"><a href="[unsubscribe]">Unsubscribe</a></p>""",
-        height=150
+<br><p>Best regards,<br>{{sender}}</p>""",
+        height=150, help="Use {{name}} and {{sender}} placeholders"
     )
 
 st.sidebar.header("⚙️ Step 3: Anti-Spam Settings")
@@ -189,7 +307,6 @@ with st.sidebar.expander("🧠 Human-Like Behavior", expanded=True):
     use_business_hours = st.checkbox("Only 9AM-8PM (business hours)", True)
     add_variations = st.checkbox("Random variations per message ✅", True,
         help="Each customer gets slightly different wording")
-    sender_name = st.text_input("Your Name:", "Your Business")
 
 with st.sidebar.expander("💬 WhatsApp", expanded=False):
     whatsapp_method = st.radio("Method:", [
@@ -213,11 +330,13 @@ with st.sidebar.expander("📧 Email", expanded=True):
         sender_email = st.text_input("Sender Email", placeholder="you@yourdomain.com")
 
 # ─── MAIN AREA ──────────────────────────────────────
-st.title("🤖 MarketAI — Human-Like Marketing Sender")
+st.title(f"🤖 MarketAI — {sender_name}")
 st.markdown("""
 **Sends like a human, not a spam bot.**  
 Random delays • Different wording per customer • Rate limited • Business hours aware  
 Unlike AiSensy/WATI which blast instantly — this mimics **real human sending behavior** to protect your account.
+
+**🎯 IMPORTANT: Customers will see WHO sent the message — Your Business Name!**
 """)
 
 # Upload
@@ -234,6 +353,7 @@ if uploaded_file is not None:
                 st.session_state["customers"] = save_customers(df, mapping)
                 st.session_state["sent_log"] = []
                 st.session_state["sending_active"] = False
+                st.session_state["uploaded_filename"] = uploaded_file.name
                 st.success(f"Loaded {len(st.session_state['customers'])} customers!")
                 st.rerun()
         else:
@@ -302,7 +422,7 @@ if st.session_state["customers"]:
         if st.button("🔗 Generate WA Links", use_container_width=True):
             for c in st.session_state["customers"]:
                 if c["mobile"] and not c["whatsapp_sent"]:
-                    msg = randomize_message(whatsapp_template, c["name"])
+                    msg = randomize_message(whatsapp_template, c["name"], sender_name)
                     c["whatsapp_link"] = generate_whatsapp_link(c["mobile"], msg)
             st.success("Links generated!")
             st.rerun()
@@ -311,7 +431,7 @@ if st.session_state["customers"]:
         if st.button("✉️ Prepare Emails", use_container_width=True):
             for c in st.session_state["customers"]:
                 if c["email"] and not c["email_sent"]:
-                    subj, body = randomize_email(email_body, c["name"], email_subject)
+                    subj, body = randomize_email(email_body, c["name"], email_subject, sender_name)
                     plain = re.sub(r'<[^>]+>', '', body).strip()
                     c["email_subject"] = subj
                     c["email_content"] = plain
@@ -368,11 +488,11 @@ if st.session_state["customers"]:
 
         c = next_c
         with st.container(border=True):
-            st.info(f"📤 **Now sending to: {c['name']}**")
+            st.info(f"📤 **Now sending to: {c['name']}** (from {sender_name})")
 
             if c["mobile"] and not c["whatsapp_sent"]:
                 with st.spinner(f"💬 Preparing WhatsApp for {c['name']}..."):
-                    msg = randomize_message(whatsapp_template, c["name"]) if add_variations else whatsapp_template.replace("{{name}}", c["name"])
+                    msg = randomize_message(whatsapp_template, c["name"], sender_name) if add_variations else whatsapp_template.replace("{{name}}", c["name"]).replace("{{sender}}", sender_name)
                     c["whatsapp_link"] = generate_whatsapp_link(c["mobile"], msg)
                     with st.expander("📱 Message Preview", expanded=False):
                         st.text(msg)
@@ -387,16 +507,17 @@ if st.session_state["customers"]:
                     st.success(f"✅ WhatsApp ready for {c['name']} — Click 💬 button to send")
                     st.session_state["sent_log"].append({
                         "name": c["name"], "type": "WhatsApp",
-                        "time": datetime.now().strftime("%H:%M:%S"), "delay": delay
+                        "time": datetime.now().strftime("%H:%M:%S"), "delay": delay,
+                        "sender": sender_name
                     })
 
             elif c["email"] and not c["email_sent"]:
                 with st.spinner(f"📧 Preparing email for {c['name']}..."):
                     if add_variations:
-                        subj, body = randomize_email(email_body, c["name"], email_subject)
+                        subj, body = randomize_email(email_body, c["name"], email_subject, sender_name)
                     else:
                         subj = email_subject.replace("{{name}}", c["name"])
-                        body = email_body.replace("{{name}}", c["name"])
+                        body = email_body.replace("{{name}}", c["name"]).replace("{{sender}}", sender_name)
                     plain = re.sub(r'<[^>]+>', '', body).strip()
                     c["email_subject"] = subj
                     c["email_content"] = plain
@@ -449,7 +570,8 @@ if st.session_state["customers"]:
                     st.success(f"✅ Email {'sent' if sent_via else 'ready'} for {c['name']} {sent_via}")
                     st.session_state["sent_log"].append({
                         "name": c["name"], "type": f"Email {sent_via}" if sent_via else "Email ready",
-                        "time": datetime.now().strftime("%H:%M:%S"), "delay": delay
+                        "time": datetime.now().strftime("%H:%M:%S"), "delay": delay,
+                        "sender": sender_name
                     })
 
         # Check limits and continue
@@ -492,7 +614,8 @@ if st.session_state["customers"]:
     if st.session_state["sent_log"]:
         st.divider()
         st.subheader("📋 Sending Log")
-        st.dataframe(pd.DataFrame(st.session_state["sent_log"]), use_container_width=True, height=200)
+        log_df = pd.DataFrame(st.session_state["sent_log"])
+        st.dataframe(log_df, use_container_width=True, height=200)
         if st.button("🗑️ Clear Log"):
             st.session_state["sent_log"] = []
             st.rerun()
@@ -504,8 +627,12 @@ st.markdown("""
     <strong>🤖 MarketAI — Human-Like Marketing Sender</strong><br>
     Free alternative to AiSensy / WATI | <strong>Anti-Spam by Design</strong><br>
     <span style="font-size:11px;">
+    ✅ Email-based authentication (NO phone login required)<br>
+    ✅ Customers see WHO sent the message (Your Business Name)<br>
+    ✅ Excel upload/delete functionality<br>
     ⚠️ Always get opt-in consent. WhatsApp ban risk if sending too fast.<br>
     This tool enforces human-like speeds to protect your account.
     </span>
 </div>
 """, unsafe_allow_html=True)
+
