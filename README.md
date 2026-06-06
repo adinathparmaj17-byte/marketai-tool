@@ -1,0 +1,2 @@
+# marketai-tool
+marketing app
