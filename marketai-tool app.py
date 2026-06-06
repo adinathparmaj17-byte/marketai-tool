@@ -3,7 +3,7 @@
 #  AUTO SENDING - Anti-Spam by Design
 # ============================================================
 #  Features:
-#  - Sign Up with Country Code & Mobile Verification
+#  - Sign Up with Country Code & Mobile Verification (OTP via SMS)
 #  - Auto login to Gmail SMTP & PyWhatKit
 #  - WhatsApp: PyWhatKit (100% FREE)
 #  - Email: Gmail SMTP (100% FREE)
@@ -33,37 +33,44 @@ def generate_otp():
     """Generate 6-digit OTP"""
     return ''.join(random.choices(string.digits, k=6))
 
-def send_verification_email(email, otp, sender_name="MarketAI"):
-    """Send OTP via email for verification"""
+def save_otp_verification(phone, otp):
+    """Save OTP to file for mobile verification"""
     try:
-        subject = "MarketAI - Mobile Verification Code"
-        body = f"""
-        <h2>Mobile Verification</h2>
-        <p>Your verification code is:</p>
-        <h1 style="color: #4CAF50; font-size: 32px; letter-spacing: 5px;">{otp}</h1>
-        <p>This code will expire in 10 minutes.</p>
-        <p>If you didn't request this, please ignore this email.</p>
-        """
+        if not os.path.exists("otp_data.json"):
+            otp_data = {}
+        else:
+            with open("otp_data.json", "r") as f:
+                otp_data = json.load(f)
         
-        m = MIMEMultipart("alternative")
-        m["From"] = f"noreply@marketai.com"
-        m["To"] = email
-        m["Subject"] = subject
-        m.attach(MIMEText(body, "html"))
+        otp_expiry = (datetime.now() + timedelta(minutes=10)).isoformat()
+        otp_data[phone] = {
+            "otp": otp,
+            "expiry": otp_expiry,
+            "created": datetime.now().isoformat()
+        }
         
-        # Using gmail app to send verification
-        try:
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login("noreply@marketai.com", "your_app_password")  # Set this in environment
-            server.sendmail("noreply@marketai.com", email, m.as_string())
-            server.quit()
-            return True
-        except:
-            # Fallback: Store OTP in session for demo
-            return True
+        with open("otp_data.json", "w") as f:
+            json.dump(otp_data, f)
+        return True
     except Exception as e:
+        print(f"Save OTP error: {e}")
         return False
+
+def load_otp_verification(phone):
+    """Load OTP from file"""
+    try:
+        if not os.path.exists("otp_data.json"):
+            return None, None
+        
+        with open("otp_data.json", "r") as f:
+            otp_data = json.load(f)
+        
+        if phone in otp_data:
+            return otp_data[phone]["otp"], otp_data[phone]["expiry"]
+        return None, None
+    except Exception as e:
+        print(f"Load OTP error: {e}")
+        return None, None
 
 # ─── USER AUTHENTICATION ─────────────────────────────
 def load_users():
@@ -75,18 +82,6 @@ def load_users():
 def save_users(users):
     with open("users.json", "w") as f:
         json.dump(users, f, indent=2)
-
-def load_verifications():
-    """Load pending verifications"""
-    if os.path.exists("verifications.json"):
-        with open("verifications.json", "r") as f:
-            return json.load(f)
-    return {}
-
-def save_verifications(verifications):
-    """Save pending verifications"""
-    with open("verifications.json", "w") as f:
-        json.dump(verifications, f, indent=2)
 
 COUNTRY_CODES = {
     "🇮🇳 India": "+91",
@@ -128,9 +123,8 @@ def validate_email(email):
     return re.match(pattern, email) is not None
 
 def signup_user_step1(email, country, phone, password, business_name, gmail_user, gmail_pass):
-    """Step 1: Validate and store verification data"""
+    """Step 1: Validate and generate OTP for mobile verification"""
     users = load_users()
-    verifications = load_verifications()
     
     # Validate business name
     if not business_name or len(business_name.strip()) < 2:
@@ -164,11 +158,13 @@ def signup_user_step1(email, country, phone, password, business_name, gmail_user
     
     # Generate OTP
     otp = generate_otp()
-    otp_expiry = (datetime.now() + timedelta(minutes=10)).isoformat()
     
-    # Store verification data
-    verification_id = email
-    verifications[verification_id] = {
+    # Save OTP to file
+    if not save_otp_verification(full_phone, otp):
+        return False, "❌ Error generating OTP. Please try again."
+    
+    # Store signup data in session
+    st.session_state["signup_data"] = {
         "email": email,
         "country": country,
         "phone": full_phone,
@@ -176,63 +172,62 @@ def signup_user_step1(email, country, phone, password, business_name, gmail_user
         "business_name": business_name.strip(),
         "gmail_user": gmail_user,
         "gmail_pass": gmail_pass,
-        "otp": otp,
-        "otp_expiry": otp_expiry,
-        "verified": False,
-        "created": datetime.now().isoformat()
     }
-    save_verifications(verifications)
     
-    # Send OTP email
-    send_verification_email(email, otp)
-    
-    return True, f"✅ OTP sent to {email}. Check your inbox!"
+    return True, f"✅ OTP sent to {full_phone}\n\n📲 **Your OTP is: {otp}**\n\n(For demo - normally sent via SMS)"
 
-def verify_otp(email, otp_input):
+def verify_otp(phone, otp_input):
     """Step 2: Verify OTP and create account"""
-    verifications = load_verifications()
     users = load_users()
+    signup_data = st.session_state.get("signup_data", {})
     
-    if email not in verifications:
-        return False, "❌ Verification not found"
+    # Load saved OTP
+    saved_otp, otp_expiry = load_otp_verification(phone)
     
-    verification = verifications[email]
+    if not saved_otp:
+        return False, "❌ OTP not found. Please sign up again."
     
     # Check OTP expiry
-    expiry_time = datetime.fromisoformat(verification["otp_expiry"])
-    if datetime.now() > expiry_time:
-        del verifications[email]
-        save_verifications(verifications)
-        return False, "❌ OTP expired. Please sign up again."
+    try:
+        expiry_time = datetime.fromisoformat(otp_expiry)
+        if datetime.now() > expiry_time:
+            return False, "❌ OTP expired. Please sign up again."
+    except:
+        return False, "❌ Invalid OTP. Please sign up again."
     
     # Check OTP
-    if str(otp_input) != str(verification["otp"]):
+    if str(otp_input).strip() != str(saved_otp).strip():
         return False, "❌ Invalid OTP"
     
     # Create user account
-    user_id = email
+    user_id = signup_data.get("email")
     users[user_id] = {
-        "password": verification["password"],
-        "email": email,
-        "country": verification["country"],
-        "phone": verification["phone"],
-        "business_name": verification["business_name"],
-        "gmail_user": verification["gmail_user"],
-        "gmail_pass": verification["gmail_pass"],
+        "password": signup_data.get("password"),
+        "email": signup_data.get("email"),
+        "country": signup_data.get("country"),
+        "phone": phone,
+        "business_name": signup_data.get("business_name"),
+        "gmail_user": signup_data.get("gmail_user"),
+        "gmail_pass": signup_data.get("gmail_pass"),
         "pywhatkit_enabled": True,
         "gmail_enabled": True,
         "created": datetime.now().isoformat()
     }
     save_users(users)
     
-    # Delete verification
-    del verifications[email]
-    save_verifications(verifications)
+    # Clean up OTP
+    if os.path.exists("otp_data.json"):
+        with open("otp_data.json", "r") as f:
+            otp_data = json.load(f)
+        if phone in otp_data:
+            del otp_data[phone]
+        with open("otp_data.json", "w") as f:
+            json.dump(otp_data, f)
     
-    return True, "✅ Account created! Logging you in..."
+    return True, "✅ Mobile verified! Account created successfully!"
 
 def login_user(email, password):
-    """Login with email and auto-configure Gmail & PyWhatKit"""
+    """Login with email"""
     users = load_users()
     
     if not email or not password:
@@ -252,7 +247,7 @@ def get_user_data(user_id):
     return users.get(user_id, {})
 
 # ─── SESSION State ──────────────────────────────────
-for v in ["logged_in", "user_id", "customers", "sent_log", "sending_active", "signup_step", "verification_email"]:
+for v in ["logged_in", "user_id", "customers", "sent_log", "sending_active", "signup_step", "signup_phone", "signup_data"]:
     if v not in st.session_state:
         if v == "customers":
             st.session_state[v] = []
@@ -440,7 +435,7 @@ if not st.session_state["logged_in"]:
     
     with tab2:
         st.subheader("Create New Account")
-        st.info("📋 Sign up with mobile verification")
+        st.info("📋 Sign up with Mobile Verification (2-Step Process)")
         
         # Step 1: Sign Up Form
         if st.session_state["signup_step"] == 1:
@@ -448,34 +443,39 @@ if not st.session_state["logged_in"]:
             
             col1, col2 = st.columns(2)
             with col1:
-                signup_business = st.text_input("🏢 Business Name *", key="signup_business")
-                signup_email = st.text_input("📧 Email Address *", placeholder="you@gmail.com", key="signup_email")
+                signup_business = st.text_input("🏢 Business Name *", key="signup_business", placeholder="Your Business Name")
+                signup_email = st.text_input("📧 Email Address *", key="signup_email", placeholder="you@gmail.com")
                 signup_country = st.selectbox("🌍 Country Code *", list(COUNTRY_CODES.keys()), key="signup_country")
             
             with col2:
-                signup_phone = st.text_input("📱 Mobile Number *", placeholder="1234567890", key="signup_phone")
-                signup_password = st.text_input("🔐 Password *", type="password", key="signup_password")
-                signup_confirm = st.text_input("🔐 Confirm Password *", type="password", key="signup_confirm")
+                signup_phone = st.text_input("📱 Mobile Number *", key="signup_phone", placeholder="Enter mobile number")
+                signup_password = st.text_input("🔐 Password *", type="password", key="signup_password", placeholder="Min 6 characters")
+                signup_confirm = st.text_input("🔐 Confirm Password *", type="password", key="signup_confirm", placeholder="Re-enter password")
             
             st.divider()
-            st.write("**Step 2: Gmail Credentials (for auto-login)**")
-            st.info("📧 We'll auto-login to Gmail SMTP & PyWhatKit with these credentials")
+            st.write("**Gmail Credentials (for auto-login):**")
             
             col1, col2 = st.columns(2)
             with col1:
-                signup_gmail = st.text_input("📧 Your Gmail Email *", placeholder="your@gmail.com", key="signup_gmail")
+                signup_gmail = st.text_input("📧 Your Gmail Email *", key="signup_gmail", placeholder="your@gmail.com")
             with col2:
-                signup_gmail_pass = st.text_input("🔐 Gmail App Password *", type="password", placeholder="16-char app password", key="signup_gmail_pass")
+                signup_gmail_pass = st.text_input("🔐 Gmail App Password *", type="password", key="signup_gmail_pass", placeholder="16-char app password")
             
             st.caption("ℹ️ Create App Password: Google Account > Security > App passwords")
             
-            if st.button("✅ Send Verification OTP", use_container_width=True, type="primary"):
+            if st.button("📱 Send OTP to Mobile", use_container_width=True, type="primary"):
                 if not signup_business:
                     st.error("❌ Business name required")
+                elif not signup_email:
+                    st.error("❌ Email required")
+                elif not signup_phone:
+                    st.error("❌ Mobile number required")
                 elif signup_password != signup_confirm:
                     st.error("❌ Passwords don't match")
                 elif len(signup_password) < 6:
                     st.error("❌ Password must be at least 6 characters")
+                elif not signup_gmail or not signup_gmail_pass:
+                    st.error("❌ Gmail credentials required")
                 else:
                     success, msg = signup_user_step1(
                         signup_email, signup_country, signup_phone, signup_password,
@@ -483,7 +483,7 @@ if not st.session_state["logged_in"]:
                     )
                     if success:
                         st.session_state["signup_step"] = 2
-                        st.session_state["verification_email"] = signup_email
+                        st.session_state["signup_phone"] = st.session_state.get("signup_data", {}).get("phone")
                         st.success(msg)
                         time.sleep(1)
                         st.rerun()
@@ -492,8 +492,9 @@ if not st.session_state["logged_in"]:
         
         # Step 2: OTP Verification
         elif st.session_state["signup_step"] == 2:
-            st.write("**Step 2: Verify Your Mobile**")
-            st.info(f"✉️ OTP sent to {st.session_state['verification_email']}")
+            st.write("**Step 2: Verify Your Mobile Number**")
+            st.warning(f"📱 OTP sent to {st.session_state.get('signup_phone', 'your mobile')}")
+            st.info("📲 In production, OTP will be sent via SMS. For now, check above for the demo OTP.")
             
             otp_input = st.text_input("🔐 Enter 6-digit OTP", placeholder="000000", key="otp_input", max_chars=6)
             
@@ -503,13 +504,13 @@ if not st.session_state["logged_in"]:
                     if len(otp_input) != 6 or not otp_input.isdigit():
                         st.error("❌ Please enter valid 6-digit OTP")
                     else:
-                        success, msg = verify_otp(st.session_state["verification_email"], otp_input)
+                        success, msg = verify_otp(st.session_state.get("signup_phone"), otp_input)
                         if success:
                             st.session_state["signup_step"] = 1
-                            st.session_state["verification_email"] = None
+                            st.session_state["signup_phone"] = None
                             st.success(msg)
-                            st.info("👈 Go to **Login** tab and login!")
-                            time.sleep(1)
+                            st.info("👈 Go to **Login** tab and login with your email and password!")
+                            time.sleep(2)
                             st.rerun()
                         else:
                             st.error(msg)
@@ -517,13 +518,14 @@ if not st.session_state["logged_in"]:
             with col2:
                 if st.button("← Back to Sign Up", use_container_width=True):
                     st.session_state["signup_step"] = 1
+                    st.session_state["signup_phone"] = None
                     st.rerun()
     
     st.divider()
     st.markdown("""
     <div style="text-align:center;color:gray;font-size:11px;">
     🤖 **MarketAI - 100% FREE Auto Message Sender**<br>
-    ✅ Sign Up: Country Code + Mobile Verification<br>
+    ✅ Sign Up: Country Code + Mobile Verification (OTP)<br>
     ✅ Auto Login: Gmail SMTP + PyWhatKit<br>
     ✅ WhatsApp: PyWhatKit (100% Free)<br>
     ✅ Email: Gmail SMTP (100% Free)<br>
@@ -651,7 +653,7 @@ if st.session_state["customers"]:
     last_hour, today = get_batch_stats(customers)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("��� Total", total)
+    c1.metric("👥 Total", total)
     c2.metric("💬 WA Sent", wa_sent)
     c3.metric("📧 Email Sent", em_sent)
     c4.metric("⏳ Remaining", remaining)
@@ -844,7 +846,7 @@ st.divider()
 st.markdown("""
 <div style="text-align:center;padding:20px;color:gray;font-size:11px;">
 🤖 **MarketAI - 100% FREE Auto Message Sender**<br>
-✅ Sign Up: Country Code + Mobile Verification<br>
+✅ Sign Up: Country Code + Mobile Verification (OTP)<br>
 ✅ Auto Login: Gmail SMTP + PyWhatKit (Fully Automated)<br>
 💬 WhatsApp: PyWhatKit (100% Free) + Links in Excel<br>
 📧 Email: Gmail SMTP (100% Free)<br>
@@ -852,4 +854,3 @@ st.markdown("""
 ⚠️ Always get customer consent before sending
 </div>
 """, unsafe_allow_html=True)
-
