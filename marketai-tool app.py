@@ -4,7 +4,8 @@
 #  WITH USER AUTHENTICATION & SENDER IDENTIFICATION
 # ============================================================
 #  Features:
-#  - Email/Username login (NO phone required)
+#  - Sign Up (Register new account with Email or Mobile)
+#  - Login (via Email OR Mobile Number)
 #  - Random delays between messages (30-120 sec like a real person)
 #  - Message variations (not identical copies)
 #  - Random emoji shuffling
@@ -39,35 +40,97 @@ def load_users():
 def save_users(users):
     """Save users to JSON file"""
     with open("users.json", "w") as f:
-        json.dump(users, f)
+        json.dump(users, f, indent=2)
 
-def authenticate_user(email, password):
-    """Check if user credentials are correct"""
-    users = load_users()
-    if email in users and users[email]["password"] == password:
-        return True
-    return False
+def validate_phone(phone):
+    """Validate Indian mobile number"""
+    phone = re.sub(r'[\s\-\+\(\)]', '', str(phone))
+    if phone.startswith("91") and len(phone) == 12:
+        return phone
+    elif phone.startswith("0") and len(phone) == 11:
+        return "91" + phone[1:]
+    elif len(phone) == 10:
+        return "91" + phone
+    return None
 
-def register_user(email, password, business_name):
-    """Register a new user"""
+def validate_email(email):
+    """Validate email format"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+def signup_user(email, mobile, password, business_name):
+    """Sign up (Register) a new user"""
     users = load_users()
-    if email in users:
-        return False, "Email already registered"
-    users[email] = {
+    
+    # Validate inputs
+    if not business_name or len(business_name.strip()) < 2:
+        return False, "❌ Business name must be at least 2 characters"
+    
+    if email:
+        if not validate_email(email):
+            return False, "❌ Invalid email format"
+        if email in users:
+            return False, "❌ Email already registered"
+    
+    if mobile:
+        clean_mobile = validate_phone(mobile)
+        if not clean_mobile:
+            return False, "❌ Invalid mobile number"
+        # Check if mobile already exists
+        for user_data in users.values():
+            if user_data.get("mobile") == clean_mobile:
+                return False, "❌ Mobile number already registered"
+        mobile = clean_mobile
+    
+    if not email and not mobile:
+        return False, "❌ Please provide either email or mobile number"
+    
+    if not password or len(password) < 6:
+        return False, "❌ Password must be at least 6 characters"
+    
+    # Create user entry
+    user_id = email if email else mobile
+    users[user_id] = {
         "password": password,
-        "business_name": business_name,
+        "email": email,
+        "mobile": mobile,
+        "business_name": business_name.strip(),
         "created": datetime.now().isoformat()
     }
     save_users(users)
-    return True, "Registration successful!"
+    return True, "✅ Sign up successful! Now login with your credentials."
 
-def get_user_data(email):
+def login_user(identifier, password):
+    """Login with Email OR Mobile Number"""
+    users = load_users()
+    
+    if not identifier or not password:
+        return False, None, "❌ Please enter both identifier and password"
+    
+    # Check if identifier is email
+    if validate_email(identifier):
+        if identifier in users and users[identifier]["password"] == password:
+            return True, identifier, "✅ Login successful!"
+        else:
+            return False, None, "❌ Invalid email or password"
+    
+    # Check if identifier is mobile
+    clean_mobile = validate_phone(identifier)
+    if clean_mobile:
+        for user_id, user_data in users.items():
+            if user_data.get("mobile") == clean_mobile and user_data["password"] == password:
+                return True, user_id, "✅ Login successful!"
+        return False, None, "❌ Invalid mobile number or password"
+    
+    return False, None, "❌ Please enter valid email or mobile number"
+
+def get_user_data(user_id):
     """Get user business data"""
     users = load_users()
-    return users.get(email, {})
+    return users.get(user_id, {})
 
 # ─── SESSION State ──────────────────────────────────
-for v in ["logged_in", "user_email", "customers", "sent_log", "sending_active", "uploaded_filename"]:
+for v in ["logged_in", "user_id", "customers", "sent_log", "sending_active", "uploaded_filename"]:
     if v not in st.session_state:
         if v == "customers":
             st.session_state[v] = []
@@ -196,70 +259,95 @@ def get_batch_stats(customers):
     sent_day = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > today_start)
     return sent_hr, sent_day
 
-# ─── LOGIN PAGE ─────────────────────────────────────
+# ─── AUTHENTICATION PAGE ─────────────────────────────
 if not st.session_state["logged_in"]:
-    st.title("🤖 MarketAI - Login")
+    st.title("🤖 MarketAI - Authentication")
+    st.markdown("**Welcome to MarketAI - Human-Like Marketing Sender**")
     
-    tab1, tab2 = st.tabs(["Login", "Register"])
+    tab1, tab2 = st.tabs(["🔓 Login", "📝 Sign Up"])
     
     with tab1:
         st.subheader("Login to Your Account")
-        login_email = st.text_input("📧 Email", placeholder="you@example.com")
-        login_password = st.text_input("🔐 Password", type="password")
+        st.info("💡 Login with either your **Email** or **Mobile Number**")
+        
+        login_identifier = st.text_input(
+            "📧 Email or 📱 Mobile Number",
+            placeholder="example@email.com or 9876543210",
+            key="login_identifier"
+        )
+        login_password = st.text_input("🔐 Password", type="password", key="login_pass")
         
         if st.button("Login", use_container_width=True, type="primary"):
-            if authenticate_user(login_email, login_password):
-                st.session_state["logged_in"] = True
-                st.session_state["user_email"] = login_email
-                st.success("✅ Logged in successfully!")
-                st.rerun()
+            if login_identifier and login_password:
+                success, user_id, msg = login_user(login_identifier, login_password)
+                if success:
+                    st.session_state["logged_in"] = True
+                    st.session_state["user_id"] = user_id
+                    st.success(msg)
+                    st.balloons()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
             else:
-                st.error("❌ Invalid email or password")
+                st.error("❌ Please enter both email/mobile and password")
     
     with tab2:
         st.subheader("Create New Account")
-        reg_email = st.text_input("📧 Email", placeholder="you@example.com", key="reg_email")
-        reg_password = st.text_input("🔐 Password", type="password", key="reg_pass")
-        reg_business = st.text_input("🏢 Business Name", placeholder="Your Company Name")
+        st.info("📋 Fill in your details to sign up")
         
-        if st.button("Register", use_container_width=True, type="primary"):
-            if not reg_email or not reg_password or not reg_business:
-                st.error("Please fill all fields")
-            elif len(reg_password) < 6:
-                st.error("Password must be at least 6 characters")
+        signup_business = st.text_input("🏢 Business Name *", placeholder="Your Company/Business Name", key="reg_business")
+        signup_email = st.text_input("📧 Email (optional)", placeholder="you@example.com", key="reg_email")
+        signup_mobile = st.text_input("📱 Mobile Number (optional)", placeholder="9876543210", key="reg_mobile")
+        st.caption("⚠️ Provide at least Email or Mobile Number")
+        
+        signup_password = st.text_input("🔐 Create Password *", type="password", key="reg_pass")
+        signup_confirm = st.text_input("🔐 Confirm Password *", type="password", key="reg_pass_confirm")
+        
+        if st.button("Sign Up", use_container_width=True, type="primary"):
+            if not signup_business:
+                st.error("❌ Business name is required")
+            elif not signup_email and not signup_mobile:
+                st.error("❌ Please provide at least Email or Mobile Number")
+            elif signup_password != signup_confirm:
+                st.error("❌ Passwords don't match")
             else:
-                success, msg = register_user(reg_email, reg_password, reg_business)
+                success, msg = signup_user(signup_email, signup_mobile, signup_password, signup_business)
                 if success:
                     st.success(msg)
-                    st.info("Now login with your credentials!")
+                    st.info("👈 Go to **Login** tab and login with your credentials")
                 else:
                     st.error(msg)
     
     st.divider()
     st.markdown("""
     <div style="text-align:center;color:gray;font-size:12px;">
-    MarketAI - Send messages with human-like behavior<br>
-    No phone login needed. Email-based authentication only.
+    🤖 MarketAI - Send messages with human-like behavior<br>
+    ✅ **Sign Up**: Register with Email or Mobile Number<br>
+    ✅ **Login**: Use Email or Mobile Number (NO verification code needed)<br>
+    ✅ Excel upload, delete & message sending with sender identification
     </div>
     """, unsafe_allow_html=True)
     st.stop()
 
 # ─── LOGGED IN USER AREA ────────────────────────────
-user_data = get_user_data(st.session_state["user_email"])
+user_data = get_user_data(st.session_state["user_id"])
 sender_name = user_data.get("business_name", "Your Business")
+user_identifier = user_data.get("email") or user_data.get("mobile")
 
 # Logout button in top right
-col1, col2 = st.columns([0.9, 0.1])
+col1, col2 = st.columns([0.85, 0.15])
 with col2:
-    if st.button("🚪 Logout"):
+    if st.button("🚪 Logout", use_container_width=True):
         st.session_state["logged_in"] = False
-        st.session_state["user_email"] = None
+        st.session_state["user_id"] = None
         st.session_state["customers"] = []
         st.rerun()
 
 # ─── SIDEBAR ────────────────────────────────────────
-st.sidebar.title(f"🤖 MarketAI - {sender_name}")
-st.sidebar.caption(f"Logged in as: {st.session_state['user_email']}")
+st.sidebar.title(f"🤖 MarketAI")
+st.sidebar.markdown(f"**{sender_name}**")
+st.sidebar.caption(f"📧/📱 {user_identifier}")
 st.sidebar.divider()
 
 st.sidebar.header("📁 Step 1: Upload Excel")
@@ -267,11 +355,11 @@ uploaded_file = st.sidebar.file_uploader("Choose file", type=["xlsx", "xls", "cs
 
 if uploaded_file:
     st.sidebar.success(f"📄 {uploaded_file.name}")
-    if st.sidebar.button("🗑️ Delete File", use_container_width=True):
+    if st.sidebar.button("🗑️ Delete Uploaded File", use_container_width=True):
         st.session_state["customers"] = []
         st.session_state["uploaded_filename"] = None
         st.session_state["sent_log"] = []
-        st.sidebar.success("✅ File deleted!")
+        st.sidebar.success("✅ File deleted! Ready to upload new file.")
         st.rerun()
 
 st.sidebar.header("🔧 Step 2: Templates")
@@ -336,7 +424,11 @@ st.markdown("""
 Random delays • Different wording per customer • Rate limited • Business hours aware  
 Unlike AiSensy/WATI which blast instantly — this mimics **real human sending behavior** to protect your account.
 
-**🎯 IMPORTANT: Customers will see WHO sent the message — Your Business Name!**
+**🎯 KEY FEATURES:**
+- ✅ **Customers see WHO sent the message** — Your Business Name appears in every message!
+- ✅ **File Upload & Delete** — Easy Excel file management
+- ✅ **Email or Mobile Login** — Simple authentication, no phone verification needed
+- ✅ **Message Personalization** — Each customer gets unique variations
 """)
 
 # Upload
@@ -488,7 +580,7 @@ if st.session_state["customers"]:
 
         c = next_c
         with st.container(border=True):
-            st.info(f"📤 **Now sending to: {c['name']}** (from {sender_name})")
+            st.info(f"📤 **Now sending to: {c['name']}** (from **{sender_name}**)")
 
             if c["mobile"] and not c["whatsapp_sent"]:
                 with st.spinner(f"💬 Preparing WhatsApp for {c['name']}..."):
@@ -627,12 +719,15 @@ st.markdown("""
     <strong>🤖 MarketAI — Human-Like Marketing Sender</strong><br>
     Free alternative to AiSensy / WATI | <strong>Anti-Spam by Design</strong><br>
     <span style="font-size:11px;">
-    ✅ Email-based authentication (NO phone login required)<br>
-    ✅ Customers see WHO sent the message (Your Business Name)<br>
-    ✅ Excel upload/delete functionality<br>
+    ✅ **Sign Up**: Register with Email or Mobile Number<br>
+    ✅ **Login**: Use Email or Mobile Number (simple password authentication)<br>
+    ✅ **Excel Upload & Delete**: Easy file management<br>
+    ✅ **Customers See WHO Sent**: Your business name in every message<br>
+    ✅ **Message Personalization**: Unique variations per customer<br>
     ⚠️ Always get opt-in consent. WhatsApp ban risk if sending too fast.<br>
     This tool enforces human-like speeds to protect your account.
     </span>
 </div>
 """, unsafe_allow_html=True)
+
 
