@@ -1,43 +1,3 @@
-✅ The problem is 100% clear.
-
-You copied my explanation text into the Python file.
-
-Your file currently starts with:
-
-```
-Here is the complete, fully updated `app.py` code.
-```
-
-That is NOT Python. So it crashes.
-
----
-
-# ✅ FIX (Follow Exactly)
-
-### Step 1:
-Open your `app.py`
-
-### Step 2:
-DELETE EVERYTHING inside it.
-
-Yes — everything.
-
-### Step 3:
-Copy ONLY the code below.
-
-Do NOT copy any extra text.
-
-The FIRST line of your file must be:
-
-```python
-# ============================================================
-```
-
----
-
-# ✅ ✅ ✅ CLEAN WORKING FULL CODE (COPY FROM HERE)
-
-```python
 # ============================================================
 # RealtyReach - WhatsApp Campaign Tool for Real Estate Agents
 # Lean SaaS MVP (Zero Cost Version)
@@ -263,31 +223,3 @@ To upgrade:
 Send payment via UPI to: yourupi@bank  
 Email screenshot to: your@email.com  
 """)
-```
-
----
-
-# ✅ VERY IMPORTANT
-
-Your file must start with:
-
-```
-# ============================================================
-```
-
-NOT with:
-- Here is the code
-- Perfect ✅
-- Any explanation text
-
----
-
-Now run:
-
-```bash
-streamlit run app.py
-```
-
-If ANY error appears, paste the FULL error here.
-
-We’ll fix it instantly. 🚀
