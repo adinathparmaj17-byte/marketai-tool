@@ -3,8 +3,74 @@
 # CLOUD VERSION (Supabase Integrated) + Smart Excel Reader
 # ============================================================
 
-import pandas as pd
+# ─── Safe Import Check First ────────────────────────
+import sys
+import subprocess
+import importlib
+
+def check_and_install(package_name, import_name=None):
+    """Check if package exists, show clear error if not"""
+    import_name = import_name or package_name
+    try:
+        importlib.import_module(import_name)
+        return True
+    except ImportError:
+        return False
+
 import streamlit as st
+
+# ─── Page Config (MUST be first streamlit command) ──
+st.set_page_config(
+    page_title="MarketAI - FREE Sender",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ─── Check Required Packages ────────────────────────
+missing_packages = []
+
+required_packages = {
+    "supabase": "supabase",
+    "pandas": "pandas",
+    "openpyxl": "openpyxl",
+}
+
+for pkg, import_name in required_packages.items():
+    if not check_and_install(pkg, import_name):
+        missing_packages.append(pkg)
+
+if missing_packages:
+    st.error("🚨 **Missing Required Packages!**")
+    st.markdown(f"""
+    ### Fix This Error:
+    
+    **Option 1: Add to `requirements.txt`** _(Streamlit Cloud)_
+    
+    Create a file called `requirements.txt` in your GitHub repo root with:
+    ```
+    streamlit>=1.28.0
+    supabase>=2.0.0
+    pandas>=2.0.0
+    openpyxl>=3.1.0
+    pywhatkit>=5.4
+    ```
+    
+    **Option 2: Install manually** _(Local machine)_
+    ```bash
+    pip install {' '.join(missing_packages)}
+    ```
+    
+    **Missing packages:** `{', '.join(missing_packages)}`
+    
+    ---
+    After adding `requirements.txt`, **push to GitHub** and 
+    **reboot your Streamlit Cloud app** from the dashboard.
+    """)
+    st.stop()
+
+# ─── Now safe to import everything ──────────────────
+import pandas as pd
 import time
 import re
 import os
@@ -16,139 +82,174 @@ import hashlib
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from supabase import create_client, Client
 
-# ─── Page Config ────────────────────────────────────
-st.set_page_config(
-    page_title="MarketAI - FREE Sender",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Supabase import with clear error
+try:
+    from supabase import create_client, Client
+except ImportError:
+    st.error("❌ `supabase` package not found!")
+    st.code("pip install supabase", language="bash")
+    st.stop()
 
-# ─── Custom CSS ─────────────────────────────────────
+# ─── Custom CSS ──────────────────────────────────────
 st.markdown("""
 <style>
+    /* Main header gradient */
     .main-header {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
+        padding: 20px 25px;
         border-radius: 12px;
         color: white;
         margin-bottom: 20px;
     }
-    .metric-card {
-        background: #f8f9fa;
+    .main-header h2 { margin: 0; font-size: 1.8rem; }
+    .main-header p  { margin: 5px 0 0; opacity: 0.85; }
+
+    /* Cards */
+    .info-card {
+        background: #f8f9ff;
+        border: 1px solid #e0e4ff;
+        border-left: 4px solid #667eea;
         padding: 15px;
         border-radius: 10px;
-        border-left: 4px solid #667eea;
+        margin: 10px 0;
     }
-    .success-box {
-        background: #d4edda;
-        border: 1px solid #c3e6cb;
-        padding: 10px;
-        border-radius: 8px;
-        color: #155724;
-    }
-    .warning-box {
-        background: #fff3cd;
-        border: 1px solid #ffeaa7;
-        padding: 10px;
-        border-radius: 8px;
-        color: #856404;
-    }
+
+    /* Buttons */
     .stButton > button {
         border-radius: 8px;
         font-weight: 600;
+        transition: all 0.2s;
     }
-    .sidebar .stButton > button {
-        width: 100%;
+
+    /* Success / Warning boxes */
+    .success-msg {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        padding: 12px;
+        border-radius: 8px;
+        color: #155724;
+        font-weight: 500;
     }
+
+    /* Hide streamlit branding */
+    #MainMenu { visibility: hidden; }
+    footer    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── SUPABASE CONNECTION ─────────────────────────────
 @st.cache_resource
-def init_connection():
-    """Initialize Supabase connection with error handling"""
+def init_supabase():
+    """Initialize Supabase with helpful error messages"""
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
-        return create_client(url, key)
+        client = create_client(url, key)
+        return client, None
     except KeyError as e:
-        st.error(f"⚠️ Missing secret: {e}. Check .streamlit/secrets.toml")
-        return None
+        return None, f"Missing secret key: {e}"
     except Exception as e:
-        st.error(f"⚠️ Supabase connection failed: {e}")
-        return None
+        return None, str(e)
 
-supabase = init_connection()
+supabase, conn_error = init_supabase()
+
 if not supabase:
+    st.error("⚠️ **Cannot connect to Supabase!**")
+    st.markdown(f"""
+    **Error:** `{conn_error}`
+    
+    ### Fix:
+    Create `.streamlit/secrets.toml` in your project:
+    ```toml
+    SUPABASE_URL = "https://your-project.supabase.co"
+    SUPABASE_KEY = "your-anon-key-here"
+    ```
+    
+    Or on **Streamlit Cloud**:
+    1. Go to your app → **⋮ Menu** → **Settings**
+    2. Click **Secrets** tab
+    3. Add:
+    ```
+    SUPABASE_URL = "https://xxxx.supabase.co"
+    SUPABASE_KEY = "eyJ..."
+    ```
+    """)
     st.stop()
 
-# ─── SECURITY HELPERS ────────────────────────────────
-def hash_password(password: str) -> str:
-    """Hash password using SHA-256 (use bcrypt in production)"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def generate_otp() -> str:
-    """Generate secure 6-digit OTP"""
-    return ''.join(random.choices(string.digits, k=6))
-
-# ─── CONSTANTS ───────────────────────────────────────
+# ─── CONSTANTS ────────────────────────────────────────
 COUNTRY_CODES = {
-    "🇮🇳 India (+91)": "+91",
-    "🇵🇰 Pakistan (+92)": "+92",
-    "🇧🇩 Bangladesh (+880)": "+880",
-    "🇬🇧 UK (+44)": "+44",
-    "🇺🇸 USA (+1)": "+1",
-    "🇨🇦 Canada (+1)": "+1",
-    "🇦🇺 Australia (+61)": "+61",
-    "🇳🇿 New Zealand (+64)": "+64",
-    "🇿🇦 South Africa (+27)": "+27",
-    "🇩🇪 Germany (+49)": "+49",
-    "🇫🇷 France (+33)": "+33",
-    "🇮🇹 Italy (+39)": "+39",
-    "🇪🇸 Spain (+34)": "+34",
-    "🇸🇬 Singapore (+65)": "+65",
-    "🇲🇾 Malaysia (+60)": "+60",
-    "🇦🇪 UAE (+971)": "+971",
+    "🇮🇳 India (+91)"        : "+91",
+    "🇵🇰 Pakistan (+92)"     : "+92",
+    "🇧🇩 Bangladesh (+880)"  : "+880",
+    "🇬🇧 UK (+44)"           : "+44",
+    "🇺🇸 USA (+1)"           : "+1",
+    "🇨🇦 Canada (+1)"        : "+1",
+    "🇦🇺 Australia (+61)"    : "+61",
+    "🇳🇿 New Zealand (+64)"  : "+64",
+    "🇿🇦 South Africa (+27)" : "+27",
+    "🇩🇪 Germany (+49)"      : "+49",
+    "🇫🇷 France (+33)"       : "+33",
+    "🇮🇹 Italy (+39)"        : "+39",
+    "🇪🇸 Spain (+34)"        : "+34",
+    "🇸🇬 Singapore (+65)"    : "+65",
+    "🇲🇾 Malaysia (+60)"     : "+60",
+    "🇦🇪 UAE (+971)"         : "+971",
     "🇸🇦 Saudi Arabia (+966)": "+966",
-    "🇳🇬 Nigeria (+234)": "+234",
-    "🇰🇪 Kenya (+254)": "+254",
-    "🇧🇷 Brazil (+55)": "+55",
+    "🇳🇬 Nigeria (+234)"     : "+234",
+    "🇰🇪 Kenya (+254)"       : "+254",
+    "🇧🇷 Brazil (+55)"       : "+55",
 }
+
+GREETINGS = [
+    "Hi {name}!", "Hello {name},", "Hey {name}!",
+    "Hi there {name}!", "Hello {name} 👋", "Hey {name} 🙌",
+    "Dear {name},", "Good day {name}!",
+]
+
+EMOJIS = ["🎉","🔥","💥","✨","🎊","🚀","💪","👋","⭐","🎯","💎","🎁"]
 
 HUMAN_DELAY_MIN = 30
 HUMAN_DELAY_MAX = 120
 
-GREETINGS = [
-    "Hi {name}!",
-    "Hello {name},",
-    "Hey {name}!",
-    "Hi there {name}!",
-    "Hello {name} 👋",
-    "Hey {name} 🙌",
-    "Dear {name},",
-    "Good day {name}!",
-]
+# ─── SECURITY HELPERS ────────────────────────────────
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
-EMOJIS = ["🎉", "🔥", "💥", "✨", "🎊", "🚀", "💪", "👋", "⭐", "🎯", "💎", "🎁"]
+def generate_otp() -> str:
+    return ''.join(random.choices(string.digits, k=6))
 
-# ─── OTP MANAGEMENT (Supabase-based) ─────────────────
-def save_otp_supabase(phone: str, otp: str) -> bool:
-    """Save OTP to Supabase for better cloud compatibility"""
+# ─── VALIDATION HELPERS ──────────────────────────────
+def validate_email_format(email: str) -> bool:
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, str(email).strip()))
+
+def validate_phone(country: str, phone: str):
+    phone_clean = re.sub(r'[\s\-\+\(\)]', '', str(phone))
+    country_code = COUNTRY_CODES.get(country, "").replace("+", "")
+    if not country_code:
+        return None, "Invalid country"
+    if not phone_clean.isdigit():
+        return None, "Only digits allowed"
+    if len(phone_clean) < 7:
+        return None, "Too short"
+    if len(phone_clean) > 15:
+        return None, "Too long"
+    if phone_clean.startswith(country_code):
+        phone_clean = phone_clean[len(country_code):]
+    return f"+{country_code}{phone_clean}", "Valid"
+
+# ─── OTP STORAGE (Supabase + Session fallback) ───────
+def save_otp(phone: str, otp: str) -> bool:
     try:
         expiry = (datetime.now() + timedelta(minutes=10)).isoformat()
-        # Upsert OTP record
-        supabase.table("otp_verifications").upsert({
-            "phone": phone,
-            "otp": otp,
-            "expiry": expiry,
-            "created_at": datetime.now().isoformat()
-        }, on_conflict="phone").execute()
+        supabase.table("otp_verifications").upsert(
+            {"phone": phone, "otp": otp, "expiry": expiry},
+            on_conflict="phone"
+        ).execute()
         return True
     except Exception:
-        # Fallback to session state if table doesn't exist
+        # Session fallback
         if "otp_store" not in st.session_state:
             st.session_state["otp_store"] = {}
         st.session_state["otp_store"][phone] = {
@@ -157,488 +258,366 @@ def save_otp_supabase(phone: str, otp: str) -> bool:
         }
         return True
 
-def verify_otp_supabase(phone: str, otp_input: str) -> tuple[bool, str]:
-    """Verify OTP from Supabase or session fallback"""
+def get_and_delete_otp(phone: str):
+    """Returns (otp, expiry_str) or (None, None)"""
     try:
-        # Try Supabase first
-        response = supabase.table("otp_verifications").select("*").eq("phone", phone).execute()
-        if response.data:
-            record = response.data[0]
-            if str(otp_input).strip() != str(record["otp"]).strip():
-                return False, "❌ Invalid OTP. Please check and try again."
-            expiry = datetime.fromisoformat(record["expiry"])
-            if datetime.now() > expiry:
-                return False, "❌ OTP expired. Please request a new one."
-            # Delete used OTP
+        resp = supabase.table("otp_verifications").select("*").eq("phone", phone).execute()
+        if resp.data:
+            record = resp.data[0]
             supabase.table("otp_verifications").delete().eq("phone", phone).execute()
-            return True, "✅ OTP verified!"
+            return record["otp"], record["expiry"]
     except Exception:
         pass
 
-    # Fallback to session state
-    otp_store = st.session_state.get("otp_store", {})
-    if phone not in otp_store:
-        return False, "❌ OTP not found. Please request a new one."
+    # Session fallback
+    store = st.session_state.get("otp_store", {})
+    if phone in store:
+        record = store.pop(phone)
+        return record["otp"], record["expiry"]
 
-    record = otp_store[phone]
-    if str(otp_input).strip() != str(record["otp"]).strip():
-        return False, "❌ Invalid OTP."
+    return None, None
 
-    expiry = datetime.fromisoformat(record["expiry"])
-    if datetime.now() > expiry:
-        return False, "❌ OTP expired."
-
-    del st.session_state["otp_store"][phone]
+def verify_otp(phone: str, otp_input: str):
+    saved_otp, expiry_str = get_and_delete_otp(phone)
+    if not saved_otp:
+        return False, "❌ OTP not found. Request a new one."
+    if str(otp_input).strip() != str(saved_otp).strip():
+        return False, "❌ Incorrect OTP."
+    if datetime.now() > datetime.fromisoformat(expiry_str):
+        return False, "❌ OTP expired. Request a new one."
     return True, "✅ OTP verified!"
 
 # ─── DATABASE FUNCTIONS ──────────────────────────────
-def validate_phone(country: str, phone: str) -> tuple[str | None, str]:
-    """Validate and format phone number"""
-    phone_clean = re.sub(r'[\s\-\+\(\)]', '', str(phone))
-    country_code = COUNTRY_CODES.get(country, "").replace("+", "")
-
-    if not country_code:
-        return None, "Invalid country selected"
-    if len(phone_clean) < 7:
-        return None, "Phone number too short"
-    if len(phone_clean) > 15:
-        return None, "Phone number too long"
-    if not phone_clean.isdigit():
-        return None, "Phone must contain only digits"
-
-    # Remove country code if already present
-    if phone_clean.startswith(country_code):
-        phone_clean = phone_clean[len(country_code):]
-
-    return f"+{country_code}{phone_clean}", "Valid"
-
-def validate_email_format(email: str) -> bool:
-    """Validate email format"""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email.strip()))
-
-@st.cache_data(ttl=60)
-def find_user_by_email(email: str) -> dict | None:
-    """Find user by email with caching"""
+@st.cache_data(ttl=30)
+def find_user_by_email(email: str):
     try:
-        response = supabase.table("users").select("*").eq("email", email.lower()).execute()
-        return response.data[0] if response.data else None
+        r = supabase.table("users").select("*").eq("email", email.lower().strip()).execute()
+        return r.data[0] if r.data else None
     except Exception as e:
-        st.error(f"Database error: {e}")
         return None
 
-def find_user_by_phone(phone: str) -> tuple[str | None, dict | None]:
-    """Find user by phone number"""
+def find_user_by_phone(phone: str):
     try:
-        response = supabase.table("users").select("*").eq("phone", phone).execute()
-        if response.data:
-            user = response.data[0]
-            return user["email"], user
-        return None, None
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        return None, None
+        r = supabase.table("users").select("*").eq("phone", phone).execute()
+        if r.data:
+            u = r.data[0]
+            return u["email"], u
+    except Exception:
+        pass
+    return None, None
 
-def save_new_user(user_data: dict) -> tuple[bool, str]:
-    """Insert new user into Supabase"""
+def save_new_user(data: dict):
     try:
-        # Hash password before saving
-        user_data["password"] = hash_password(user_data["password"])
-        supabase.table("users").insert(user_data).execute()
-        # Clear cache
+        data["password"] = hash_password(data["password"])
+        data["created_at"] = datetime.now().isoformat()
+        supabase.table("users").insert(data).execute()
         find_user_by_email.clear()
-        return True, "✅ Account created successfully!"
+        return True, "✅ Account created!"
     except Exception as e:
-        error_msg = str(e)
-        if "duplicate" in error_msg.lower():
+        err = str(e)
+        if "duplicate" in err.lower() or "unique" in err.lower():
             return False, "❌ Email or phone already registered."
-        return False, f"❌ Database error: {error_msg}"
+        return False, f"❌ Database error: {err[:100]}"
 
-def update_password(email: str, new_password: str) -> tuple[bool, str]:
-    """Update user password"""
+def update_password_db(email: str, new_password: str):
     try:
-        hashed = hash_password(new_password)
-        supabase.table("users").update({"password": hashed}).eq("email", email).execute()
+        supabase.table("users").update(
+            {"password": hash_password(new_password)}
+        ).eq("email", email).execute()
         find_user_by_email.clear()
-        return True, "✅ Password updated successfully!"
+        return True, "✅ Password updated!"
     except Exception as e:
         return False, f"❌ Error: {e}"
 
-# ─── AUTHENTICATION ───────────────────────────────────
-def signup_step1(
-    email: str, country: str, phone: str,
-    password: str, confirm: str,
-    business_name: str, gmail_user: str, gmail_pass: str
-) -> tuple[bool, str]:
-    """Validate signup form and send OTP"""
-
-    # Validations
-    if not business_name or len(business_name.strip()) < 2:
-        return False, "❌ Business name must be at least 2 characters."
-    if not email or not validate_email_format(email):
+# ─── AUTH FUNCTIONS ───────────────────────────────────
+def do_signup_step1(email, country, phone, password, confirm, business, gmail, gpass):
+    if not business or len(business.strip()) < 2:
+        return False, "❌ Business name needs 2+ characters."
+    if not validate_email_format(email):
         return False, "❌ Invalid email format."
     if find_user_by_email(email):
-        return False, "❌ This email is already registered."
+        return False, "❌ Email already registered."
 
-    full_phone, phone_msg = validate_phone(country, phone)
+    full_phone, pmsg = validate_phone(country, phone)
     if not full_phone:
-        return False, f"❌ Phone error: {phone_msg}"
+        return False, f"❌ Phone error: {pmsg}"
 
     _, existing = find_user_by_phone(full_phone)
     if existing:
-        return False, "❌ This phone number is already registered."
+        return False, "❌ Phone number already registered."
 
     if not password or len(password) < 6:
-        return False, "❌ Password must be at least 6 characters."
+        return False, "❌ Password needs 6+ characters."
     if password != confirm:
-        return False, "❌ Passwords do not match."
-    if not gmail_user or not validate_email_format(gmail_user):
+        return False, "❌ Passwords don't match."
+    if not validate_email_format(gmail):
         return False, "❌ Invalid Gmail address."
-    if not gmail_pass or len(gmail_pass) < 8:
-        return False, "❌ Gmail App Password must be at least 8 characters."
+    if not gpass or len(gpass) < 8:
+        return False, "❌ Gmail App Password needs 8+ characters."
 
-    # Generate & save OTP
     otp = generate_otp()
-    save_otp_supabase(full_phone, otp)
+    save_otp(full_phone, otp)
 
-    # Store pending signup data in session
     st.session_state["pending_signup"] = {
-        "email": email.lower().strip(),
-        "country": country,
-        "phone": full_phone,
-        "password": password,
-        "business_name": business_name.strip(),
-        "gmail_user": gmail_user.strip(),
-        "gmail_pass": gmail_pass,
+        "email"        : email.lower().strip(),
+        "country"      : country,
+        "phone"        : full_phone,
+        "password"     : password,
+        "business_name": business.strip(),
+        "gmail_user"   : gmail.strip(),
+        "gmail_pass"   : gpass,
     }
+    return True, (
+        f"📲 OTP for **{full_phone}**: `{otp}`\n\n"
+        "_In production this would be sent via SMS (Twilio/MSG91)._"
+    )
 
-    # In production: Send OTP via SMS API (Twilio, MSG91, etc.)
-    # For MVP: Display OTP directly
-    return True, f"📲 **OTP for {full_phone}: `{otp}`**\n\n_In production, this would be sent via SMS._"
-
-def complete_signup(otp_input: str) -> tuple[bool, str]:
-    """Complete signup after OTP verification"""
+def do_complete_signup(otp_input: str):
     pending = st.session_state.get("pending_signup", {})
     if not pending:
-        return False, "❌ Session expired. Please start over."
+        return False, "❌ Session expired. Start over."
 
-    phone = pending.get("phone")
-    verified, msg = verify_otp_supabase(phone, otp_input)
-
-    if not verified:
+    ok, msg = verify_otp(pending["phone"], otp_input)
+    if not ok:
         return False, msg
 
-    user_data = {
-        "email": pending["email"],
-        "password": pending["password"],  # Will be hashed in save_new_user
-        "business_name": pending["business_name"],
-        "country": pending["country"],
-        "phone": pending["phone"],
-        "gmail_user": pending["gmail_user"],
-        "gmail_pass": pending["gmail_pass"],
-        "created_at": datetime.now().isoformat()
-    }
-
-    success, message = save_new_user(user_data)
+    success, message = save_new_user(dict(pending))
     if success:
         st.session_state.pop("pending_signup", None)
-
     return success, message
 
-def login_user(email: str, password: str) -> tuple[bool, str | None, str]:
-    """Authenticate user login"""
+def do_login(email: str, password: str):
     if not email or not password:
-        return False, None, "❌ Please enter both email and password."
+        return False, None, "❌ Enter email and password."
     if not validate_email_format(email):
         return False, None, "❌ Invalid email format."
-
     user = find_user_by_email(email.lower().strip())
-
     if user and user["password"] == hash_password(password):
         return True, user["email"], f"✅ Welcome back, **{user['business_name']}**!"
+    return False, None, "❌ Wrong email or password."
 
-    return False, None, "❌ Invalid email or password."
+# ─── SESSION STATE ────────────────────────────────────
+DEFAULTS = {
+    "logged_in"       : False,
+    "user_id"         : None,
+    "customers"       : [],
+    "sending_active"  : False,
+    "signup_step"     : 1,
+    "forgot_step"     : 1,
+    "forgot_email"    : None,
+    "forgot_phone"    : None,
+    "forgot_otp_sent" : False,
+    "pending_signup"  : {},
+    "otp_store"       : {},
+}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# ─── SESSION STATE INITIALIZATION ────────────────────
-def init_session_state():
-    """Initialize all session state variables"""
-    defaults = {
-        "logged_in": False,
-        "user_id": None,
-        "customers": [],
-        "sent_log": [],
-        "sending_active": False,
-        "signup_step": 1,
-        "forgot_step": 1,
-        "forgot_user_email": None,
-        "forgot_phone": None,
-        "forgot_otp_sent": False,
-        "pending_signup": {},
-        "otp_store": {},
-        "send_mode": "whatsapp",
-        "current_send_index": 0,
-    }
-    for key, default in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = default
-
-init_session_state()
-
-# ─── EXCEL PROCESSING ────────────────────────────────
-def detect_columns(df: pd.DataFrame) -> tuple[bool, str, dict]:
-    """Smart column detection for Excel/CSV files"""
+# ─── EXCEL / CSV PROCESSING ──────────────────────────
+def detect_columns(df: pd.DataFrame):
     df.columns = [str(c).strip().lower() for c in df.columns]
     mapping = {}
 
-    # Name column detection
-    name_patterns = ["name", "customer", "person", "client", "contact", "full name"]
     for col in df.columns:
-        if any(p in col for p in name_patterns):
-            mapping["name"] = col
-            break
+        if any(p in col for p in ["name","customer","person","client","contact name"]):
+            mapping["name"] = col; break
 
-    # Mobile column detection
-    mobile_patterns = ["mobile", "phone", "whatsapp", "contact", "number", "cell", "tel", "no.", "no"]
     for col in df.columns:
-        if any(p in col for p in mobile_patterns) and col != mapping.get("name"):
-            mapping["mobile"] = col
-            break
+        if any(p in col for p in ["mobile","phone","whatsapp","cell","tel","contact","number"]):
+            if col != mapping.get("name"):
+                mapping["mobile"] = col; break
 
-    # Email column detection
     for col in df.columns:
         if "email" in col or "mail" in col:
-            mapping["email"] = col
-            break
+            mapping["email"] = col; break
 
-    # Validation
     if "name" not in mapping:
-        return False, f"❌ No 'Name' column found.\n\nFound columns: `{list(df.columns)}`", mapping
-
+        return False, f"❌ No Name column found. Columns: `{list(df.columns)}`", mapping
     if "mobile" not in mapping and "email" not in mapping:
-        return False, f"❌ Need at least 'Mobile' or 'Email' column.\n\nFound: `{list(df.columns)}`", mapping
+        return False, f"❌ Need Mobile or Email column. Columns: `{list(df.columns)}`", mapping
 
-    found = {v: k for k, v in mapping.items()}
-    return True, f"✅ Detected → Name: `{mapping.get('name')}` | Mobile: `{mapping.get('mobile', 'N/A')}` | Email: `{mapping.get('email', 'N/A')}`", mapping
+    info = (f"✅ Name→`{mapping.get('name')}` | "
+            f"Mobile→`{mapping.get('mobile','—')}` | "
+            f"Email→`{mapping.get('email','—')}`")
+    return True, info, mapping
 
-def clean_phone(num: str) -> str:
-    """Clean and format phone number"""
+def clean_phone_number(num: str) -> str:
     num = re.sub(r'[\s\-\+\(\)\.xe]', '', str(num).split(".")[0])
-    if not num.isdigit():
-        return ""
-    if num.startswith("91") and len(num) == 12:
-        return num
-    if num.startswith("0") and len(num) == 11:
-        return "91" + num[1:]
-    if len(num) == 10:
-        return "91" + num
+    if not num.isdigit(): return ""
+    if num.startswith("91") and len(num) == 12: return num
+    if num.startswith("0") and len(num) == 11:  return "91" + num[1:]
+    if len(num) == 10: return "91" + num
     return num
 
-def process_customers(df: pd.DataFrame, mapping: dict) -> list[dict]:
-    """Convert DataFrame to customer list"""
+def process_excel(df: pd.DataFrame, mapping: dict) -> list:
     customers = []
+    BAD_VALS = {"nan","nat","none","<na>","","n/a","null"}
 
     for idx, row in df.iterrows():
-        def get_val(key):
+        def get(key):
             col = mapping.get(key)
             if col and col in row.index:
-                val = str(row[col]).strip()
-                return "" if val.lower() in ["nan", "nat", "none", "<na>", ""] else val
+                v = str(row[col]).strip()
+                return "" if v.lower() in BAD_VALS else v
             return ""
 
-        name = get_val("name") or f"Customer {idx + 1}"
-        mobile = clean_phone(get_val("mobile")) if mapping.get("mobile") else ""
-        email = get_val("email") if mapping.get("email") else ""
+        name   = get("name")   or f"Customer {idx+1}"
+        mobile = clean_phone_number(get("mobile")) if mapping.get("mobile") else ""
+        email  = get("email").lower() if mapping.get("email") else ""
 
-        # Skip entirely empty rows
         if not mobile and not email:
             continue
 
         customers.append({
-            "id": idx,
-            "name": name,
-            "mobile": mobile,
-            "email": email,
+            "id"           : idx,
+            "name"         : name,
+            "mobile"       : mobile,
+            "email"        : email,
             "whatsapp_sent": False,
-            "email_sent": False,
-            "sent_at": None,
-            "error": None,
+            "email_sent"   : False,
+            "sent_at"      : None,
+            "error"        : None,
         })
-
     return customers
 
-# ─── MESSAGE HELPERS ─────────────────────────────────
-def humanize_message(template: str, name: str, sender: str) -> str:
-    """Add random variations to WhatsApp message"""
+# ─── MESSAGING HELPERS ───────────────────────────────
+def humanize_whatsapp(template: str, name: str, sender: str) -> str:
     greeting = random.choice(GREETINGS).format(name=name)
     msg = template.replace("{{name}}", name).replace("{{sender}}", sender)
-
-    # Replace first line greeting if it starts with Hi/Hello/Hey
     lines = msg.split("\n", 1)
-    if lines[0].startswith(("Hi", "Hello", "Hey", "Dear", "Good")):
+    if lines[0].startswith(("Hi","Hello","Hey","Dear","Good")):
         msg = greeting + ("\n" + lines[1] if len(lines) > 1 else "")
-
     msg = msg.strip() + f"\n\n— {sender}"
-
-    # Randomly add emoji
     if random.random() > 0.4:
         msg += " " + random.choice(EMOJIS)
-
     return msg
 
-def humanize_email(template: str, name: str, subject: str, sender: str) -> tuple[str, str]:
-    """Add random variations to email"""
+def humanize_email(template: str, name: str, subject: str, sender: str):
     greeting = random.choice(GREETINGS).format(name=name)
-
-    # Random emoji prefix on subject
     if random.random() > 0.5:
         subject = random.choice(EMOJIS) + " " + subject
-
     body = template.replace("{{name}}", name).replace("{{sender}}", sender)
     body = re.sub(r'Hi \{\{name\}\}', greeting, body)
     subject = subject.replace("{{name}}", name)
     body += f"\n\n<p><em>Sent by <strong>{sender}</strong></em></p>"
-
     return subject, body
 
-def get_send_stats(customers: list) -> tuple[int, int, int, int]:
-    """Get sending statistics"""
+def get_stats(customers: list):
     now = datetime.now()
-    one_hour_ago = now - timedelta(hours=1)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    one_hr  = now - timedelta(hours=1)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    total   = len(customers)
+    sent    = sum(1 for c in customers if c["whatsapp_sent"] or c["email_sent"])
+    per_hr  = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > one_hr)
+    per_day = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > day_start)
+    pending = total - sent
+    return total, sent, per_hr, per_day, pending
 
-    sent_total = sum(1 for c in customers if c["whatsapp_sent"] or c["email_sent"])
-    sent_hour = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > one_hour_ago)
-    sent_today = sum(1 for c in customers if c.get("sent_at") and c["sent_at"] > today_start)
-    pending = sum(1 for c in customers if not c["whatsapp_sent"] and not c["email_sent"])
-
-    return sent_total, sent_hour, sent_today, pending
-
-# ─── SENDING FUNCTIONS ───────────────────────────────
-def send_whatsapp(mobile: str, message: str) -> tuple[bool, str]:
-    """Send WhatsApp via pywhatkit"""
+# ─── SEND FUNCTIONS ──────────────────────────────────
+def send_whatsapp(mobile: str, message: str):
     try:
         import pywhatkit
-        clean = clean_phone(mobile)
-        if not clean:
+        num = clean_phone_number(mobile)
+        if not num:
             return False, "❌ Invalid phone number"
-        pywhatkit.sendwhatmsg_instantly(f"+{clean}", message, tab_close=True, close_time=3)
+        pywhatkit.sendwhatmsg_instantly(f"+{num}", message, tab_close=True, close_time=3)
         time.sleep(2)
-        return True, "✅ WhatsApp sent!"
+        return True, "✅ Sent!"
     except ImportError:
-        return False, "❌ Install pywhatkit: `pip install pywhatkit`"
+        return False, "❌ Install pywhatkit: pip install pywhatkit"
     except Exception as e:
-        return False, f"❌ WhatsApp error: {str(e)[:80]}"
+        return False, f"❌ {str(e)[:80]}"
 
-def send_email(
-    to_email: str, subject: str, body: str,
-    gmail_user: str, gmail_pass: str, sender_name: str
-) -> tuple[bool, str]:
-    """Send email via Gmail SMTP"""
+def send_email_smtp(to: str, subject: str, body: str, gmail_user: str, gmail_pass: str, sender: str):
     try:
-        if not validate_email_format(to_email):
-            return False, "❌ Invalid recipient email"
-
-        # Create plain text version
-        plain_text = re.sub(r'<[^>]+>', '', body).strip()
-
+        if not validate_email_format(to):
+            return False, "❌ Invalid email address"
+        plain = re.sub(r'<[^>]+>', '', body).strip()
         msg = MIMEMultipart("alternative")
-        msg["From"] = f"{sender_name} <{gmail_user}>"
-        msg["To"] = to_email
+        msg["From"]    = f"{sender} <{gmail_user}>"
+        msg["To"]      = to
         msg["Subject"] = subject
-        msg["X-Mailer"] = "MarketAI"
-
-        msg.attach(MIMEText(plain_text, "plain"))
-        msg.attach(MIMEText(body, "html"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(gmail_user, gmail_pass)
-            server.sendmail(gmail_user, to_email, msg.as_string())
-
-        return True, "✅ Email sent!"
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(body,  "html"))
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
+            s.ehlo(); s.starttls()
+            s.login(gmail_user, gmail_pass)
+            s.sendmail(gmail_user, to, msg.as_string())
+        return True, "✅ Sent!"
     except smtplib.SMTPAuthenticationError:
-        return False, "❌ Gmail auth failed. Check App Password."
-    except smtplib.SMTPRecipientsRefused:
-        return False, "❌ Recipient email rejected."
+        return False, "❌ Gmail auth failed — check App Password"
     except Exception as e:
-        return False, f"❌ Email error: {str(e)[:80]}"
+        return False, f"❌ {str(e)[:80]}"
 
 # ============================================================
-# AUTH PAGES (Not logged in)
+# AUTH PAGES
 # ============================================================
 if not st.session_state["logged_in"]:
 
-    # Header
     st.markdown("""
     <div class="main-header">
-        <h1>🤖 MarketAI - Cloud Auto Sender</h1>
-        <p>Send WhatsApp & Email campaigns automatically — 100% FREE</p>
+        <h2>🤖 MarketAI — Cloud Auto Sender</h2>
+        <p>Send WhatsApp & Email campaigns automatically · 100% FREE</p>
     </div>
     """, unsafe_allow_html=True)
 
     tab_login, tab_signup, tab_forgot = st.tabs(["🔓 Login", "📝 Sign Up", "🔑 Forgot Password"])
 
-    # ── LOGIN TAB ──────────────────────────────────────
+    # ──────── LOGIN ────────────────────────────────────
     with tab_login:
-        st.subheader("Login to Your Account")
+        st.subheader("Login")
+        with st.form("login_form", clear_on_submit=False):
+            le = st.text_input("📧 Email", placeholder="you@gmail.com")
+            lp = st.text_input("🔐 Password", type="password")
+            login_btn = st.form_submit_button("🔓 Login", use_container_width=True, type="primary")
 
-        with st.form("login_form"):
-            login_email = st.text_input("📧 Email Address", placeholder="you@gmail.com")
-            login_password = st.text_input("🔐 Password", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("🔓 Login", use_container_width=True, type="primary")
-
-        if submitted:
-            if not login_email or not login_password:
-                st.error("❌ Please fill in all fields.")
+        if login_btn:
+            with st.spinner("Checking credentials..."):
+                ok, uid, msg = do_login(le, lp)
+            if ok:
+                st.session_state["logged_in"] = True
+                st.session_state["user_id"]   = uid
+                st.success(msg)
+                time.sleep(1)
+                st.rerun()
             else:
-                with st.spinner("Authenticating..."):
-                    success, user_id, msg = login_user(login_email, login_password)
-                if success:
-                    st.session_state["logged_in"] = True
-                    st.session_state["user_id"] = user_id
-                    st.success(msg)
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error(msg)
+                st.error(msg)
 
-    # ── SIGNUP TAB ─────────────────────────────────────
+    # ──────── SIGN UP ──────────────────────────────────
     with tab_signup:
         st.subheader("Create Free Account")
 
         if st.session_state["signup_step"] == 1:
             with st.form("signup_form"):
-                st.write("**📋 Business Info**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    s_business = st.text_input("🏢 Business Name *", placeholder="My Shop")
-                    s_email = st.text_input("📧 Email *", placeholder="you@gmail.com")
-                    s_country = st.selectbox("🌍 Country *", list(COUNTRY_CODES.keys()))
-                with col2:
-                    s_phone = st.text_input("📱 Mobile Number *", placeholder="9876543210")
-                    s_password = st.text_input("🔐 Password *", type="password", placeholder="Min 6 chars")
-                    s_confirm = st.text_input("🔐 Confirm Password *", type="password")
+                st.write("**Business Info**")
+                c1, c2 = st.columns(2)
+                with c1:
+                    sb = st.text_input("🏢 Business Name *")
+                    se = st.text_input("📧 Email *")
+                    sc = st.selectbox("🌍 Country *", list(COUNTRY_CODES.keys()))
+                with c2:
+                    sp  = st.text_input("📱 Mobile *", placeholder="9876543210")
+                    spw = st.text_input("🔐 Password *", type="password")
+                    spc = st.text_input("🔐 Confirm *", type="password")
 
                 st.divider()
-                st.write("**📧 Gmail Settings** _(for sending emails)_")
-                st.info("💡 Use [Gmail App Password](https://myaccount.google.com/apppasswords), not your regular password.")
+                st.write("**Gmail Settings** _(for email sending)_")
+                st.caption("Use Gmail App Password — not your regular password")
 
-                col3, col4 = st.columns(2)
-                with col3:
-                    s_gmail = st.text_input("📧 Gmail Address *", placeholder="you@gmail.com")
-                with col4:
-                    s_gmail_pass = st.text_input("🔐 App Password *", type="password", placeholder="xxxx xxxx xxxx xxxx")
+                c3, c4 = st.columns(2)
+                with c3: sg  = st.text_input("📧 Gmail Address *")
+                with c4: sgp = st.text_input("🔐 App Password *", type="password")
 
-                submitted_signup = st.form_submit_button("📱 Send OTP to Mobile", use_container_width=True, type="primary")
+                otp_btn = st.form_submit_button(
+                    "📱 Send OTP & Continue",
+                    use_container_width=True, type="primary"
+                )
 
-            if submitted_signup:
+            if otp_btn:
                 with st.spinner("Validating..."):
-                    success, msg = signup_step1(
-                        s_email, s_country, s_phone, s_password, s_confirm,
-                        s_business, s_gmail, s_gmail_pass
-                    )
-                if success:
+                    ok, msg = do_signup_step1(se, sc, sp, spw, spc, sb, sg, sgp)
+                if ok:
                     st.session_state["signup_step"] = 2
                     st.success(msg)
                     st.rerun()
@@ -647,28 +626,21 @@ if not st.session_state["logged_in"]:
 
         elif st.session_state["signup_step"] == 2:
             pending = st.session_state.get("pending_signup", {})
-            st.info(f"📱 OTP sent to **{pending.get('phone', 'your phone')}**")
-            st.warning("⏰ OTP expires in 10 minutes")
+            st.info(f"📱 OTP sent to **{pending.get('phone')}** — valid 10 mins")
 
             with st.form("otp_form"):
-                otp_input = st.text_input(
-                    "🔐 Enter 6-digit OTP",
-                    max_chars=6,
-                    placeholder="123456"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    verify_btn = st.form_submit_button("✅ Verify & Create Account", type="primary", use_container_width=True)
-                with col_b:
-                    back_btn = st.form_submit_button("← Go Back", use_container_width=True)
+                oi = st.text_input("🔐 Enter 6-digit OTP", max_chars=6, placeholder="123456")
+                ca, cb = st.columns(2)
+                with ca: vbtn = st.form_submit_button("✅ Verify & Create Account", type="primary", use_container_width=True)
+                with cb: bbtn = st.form_submit_button("← Back", use_container_width=True)
 
-            if verify_btn:
-                if not otp_input or len(otp_input) != 6:
-                    st.error("❌ Please enter the 6-digit OTP.")
+            if vbtn:
+                if len(str(oi).strip()) != 6:
+                    st.error("❌ OTP must be 6 digits.")
                 else:
-                    with st.spinner("Verifying..."):
-                        success, msg = complete_signup(otp_input)
-                    if success:
+                    with st.spinner("Creating account..."):
+                        ok, msg = do_complete_signup(oi)
+                    if ok:
                         st.session_state["signup_step"] = 1
                         st.success(msg)
                         st.balloons()
@@ -677,453 +649,352 @@ if not st.session_state["logged_in"]:
                     else:
                         st.error(msg)
 
-            if back_btn:
+            if bbtn:
                 st.session_state["signup_step"] = 1
                 st.rerun()
 
-    # ── FORGOT PASSWORD TAB ────────────────────────────
+    # ──────── FORGOT PASSWORD ──────────────────────────
     with tab_forgot:
         st.subheader("🔑 Reset Password")
         step = st.session_state["forgot_step"]
 
-        # Step 1: Find Account
         if step == 1:
-            method = st.radio(
-                "Find your account by:",
-                ["📧 Email Address", "📱 Phone Number"],
-                horizontal=True
-            )
-
-            with st.form("forgot_form_1"):
-                if method == "📧 Email Address":
-                    f_email = st.text_input("📧 Registered Email", placeholder="you@gmail.com")
-                    find_btn = st.form_submit_button("🔍 Find Account", use_container_width=True)
-
-                    if find_btn:
-                        user = find_user_by_email(f_email)
-                        if user:
-                            st.session_state["forgot_user_email"] = f_email.lower()
-                            st.session_state["forgot_phone"] = user.get("phone")
-                            st.session_state["forgot_step"] = 2
+            method = st.radio("Find account by:", ["📧 Email", "📱 Phone"], horizontal=True)
+            with st.form("forgot_find"):
+                if method == "📧 Email":
+                    fe = st.text_input("📧 Registered Email")
+                    fb = st.form_submit_button("🔍 Find", use_container_width=True)
+                    if fb:
+                        u = find_user_by_email(fe)
+                        if u:
+                            st.session_state.update({"forgot_email": u["email"], "forgot_phone": u["phone"], "forgot_step": 2})
                             st.rerun()
-                        else:
-                            st.error("❌ No account found with that email.")
-
+                        else: st.error("❌ Not found.")
                 else:
-                    f_country = st.selectbox("🌍 Country", list(COUNTRY_CODES.keys()))
-                    f_phone = st.text_input("📱 Mobile Number", placeholder="9876543210")
-                    find_btn = st.form_submit_button("🔍 Find Account", use_container_width=True)
+                    fc = st.selectbox("🌍 Country", list(COUNTRY_CODES.keys()))
+                    fp = st.text_input("📱 Mobile")
+                    fb = st.form_submit_button("🔍 Find", use_container_width=True)
+                    if fb:
+                        fph, _ = validate_phone(fc, fp)
+                        em, u  = find_user_by_phone(fph) if fph else (None, None)
+                        if u:
+                            st.session_state.update({"forgot_email": em, "forgot_phone": fph, "forgot_step": 2})
+                            st.rerun()
+                        else: st.error("❌ Not found.")
 
-                    if find_btn:
-                        full_phone, err = validate_phone(f_country, f_phone)
-                        if not full_phone:
-                            st.error(f"❌ {err}")
-                        else:
-                            email_found, user = find_user_by_phone(full_phone)
-                            if user:
-                                st.session_state["forgot_user_email"] = email_found
-                                st.session_state["forgot_phone"] = full_phone
-                                st.session_state["forgot_step"] = 2
-                                st.rerun()
-                            else:
-                                st.error("❌ No account found with that phone number.")
-
-        # Step 2: Send & Verify OTP
         elif step == 2:
-            phone_display = st.session_state.get("forgot_phone", "")
-            st.info(f"📱 Account found! Phone: **{phone_display}**")
+            phone_disp = st.session_state["forgot_phone"]
+            st.info(f"Account found! Phone: **{phone_disp}**")
 
-            if not st.session_state.get("forgot_otp_sent"):
-                if st.button("📲 Send OTP", use_container_width=True, type="primary"):
+            if not st.session_state["forgot_otp_sent"]:
+                if st.button("📲 Send OTP", type="primary", use_container_width=True):
                     otp = generate_otp()
-                    save_otp_supabase(phone_display, otp)
+                    save_otp(phone_disp, otp)
                     st.session_state["forgot_otp_sent"] = True
-                    st.success(f"✅ OTP sent! **Your OTP: `{otp}`**")
+                    st.success(f"✅ OTP sent! Code: `{otp}`")
                     st.rerun()
             else:
-                with st.form("forgot_otp_form"):
-                    f_otp = st.text_input("🔐 Enter OTP", max_chars=6, placeholder="123456")
-                    verify_f = st.form_submit_button("✅ Verify OTP", use_container_width=True, type="primary")
-
-                if verify_f:
-                    ok, msg = verify_otp_supabase(phone_display, f_otp)
+                with st.form("forgot_otp"):
+                    fo = st.text_input("🔐 Enter OTP", max_chars=6)
+                    fv = st.form_submit_button("✅ Verify", type="primary", use_container_width=True)
+                if fv:
+                    ok, msg = verify_otp(phone_disp, fo)
                     if ok:
-                        st.session_state["forgot_step"] = 3
-                        st.session_state["forgot_otp_sent"] = False
+                        st.session_state.update({"forgot_step": 3, "forgot_otp_sent": False})
                         st.rerun()
-                    else:
-                        st.error(msg)
+                    else: st.error(msg)
 
-                if st.button("← Back to Find Account"):
-                    st.session_state["forgot_step"] = 1
-                    st.session_state["forgot_otp_sent"] = False
+                if st.button("← Back"):
+                    st.session_state.update({"forgot_step": 1, "forgot_otp_sent": False})
                     st.rerun()
 
-        # Step 3: Set New Password
         elif step == 3:
-            st.success("✅ Identity verified! Set your new password.")
-            with st.form("new_password_form"):
-                new_pass = st.text_input("🔐 New Password", type="password", placeholder="Min 6 chars")
-                conf_pass = st.text_input("🔐 Confirm Password", type="password")
-                reset_btn = st.form_submit_button("✅ Reset Password", use_container_width=True, type="primary")
-
-            if reset_btn:
-                if len(new_pass) < 6:
-                    st.error("❌ Password must be at least 6 characters.")
-                elif new_pass != conf_pass:
-                    st.error("❌ Passwords do not match.")
+            st.success("✅ Identity confirmed!")
+            with st.form("new_pass_form"):
+                np1 = st.text_input("🔐 New Password", type="password")
+                np2 = st.text_input("🔐 Confirm", type="password")
+                rb  = st.form_submit_button("✅ Reset Password", type="primary", use_container_width=True)
+            if rb:
+                if len(np1) < 6:
+                    st.error("❌ Needs 6+ characters.")
+                elif np1 != np2:
+                    st.error("❌ Don't match.")
                 else:
-                    success, msg = update_password(st.session_state["forgot_user_email"], new_pass)
-                    if success:
-                        # Reset all forgot state
-                        for k in ["forgot_step", "forgot_user_email", "forgot_phone", "forgot_otp_sent"]:
+                    ok, msg = update_password_db(st.session_state["forgot_email"], np1)
+                    if ok:
+                        for k in ["forgot_step","forgot_email","forgot_phone","forgot_otp_sent"]:
                             st.session_state[k] = 1 if k == "forgot_step" else None
                         st.success("✅ Password reset! Please login.")
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+                        time.sleep(2); st.rerun()
+                    else: st.error(msg)
 
     st.stop()
 
 # ============================================================
 # MAIN APP (Logged In)
 # ============================================================
-user_data = find_user_by_email(st.session_state["user_id"]) or {}
-sender_name = user_data.get("business_name", "Your Business")
-gmail_user = user_data.get("gmail_user", "")
-gmail_pass = user_data.get("gmail_pass", "")
+user_data   = find_user_by_email(st.session_state["user_id"]) or {}
+sender_name = user_data.get("business_name", "My Business")
+gmail_user  = user_data.get("gmail_user", "")
+gmail_pass  = user_data.get("gmail_pass", "")
 
-# ── Header ─────────────────────────────────────────
-col_title, col_user, col_logout = st.columns([0.6, 0.25, 0.15])
-with col_title:
+# Header
+col_h, col_lg = st.columns([0.85, 0.15])
+with col_h:
     st.markdown(f"""
     <div class="main-header">
-        <h2>🤖 {sender_name} Dashboard</h2>
-        <p>📧 {st.session_state["user_id"]} | 📱 {user_data.get("phone", "N/A")}</p>
+        <h2>🤖 {sender_name}</h2>
+        <p>📧 {st.session_state["user_id"]} | 📱 {user_data.get("phone","—")}</p>
     </div>
     """, unsafe_allow_html=True)
-with col_logout:
-    if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+with col_lg:
+    st.write("")
+    st.write("")
+    if st.button("🚪 Logout", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
 
-# ── Sidebar ────────────────────────────────────────
+# ── SIDEBAR ───────────────────────────────────────────
 with st.sidebar:
-    st.header("📁 Step 1: Load Contacts")
+    st.header("📁 Upload Contacts")
 
-    # Sample download
-    sample_df = pd.DataFrame({
-        "Name": ["John Doe", "Jane Smith", "Bob Wilson"],
-        "Mobile": ["9876543210", "9123456789", "9988776655"],
-        "Email": ["john@example.com", "jane@example.com", "bob@example.com"]
+    sample = pd.DataFrame({
+        "Name"  : ["John Doe","Jane Smith","Bob Wilson"],
+        "Mobile": ["9876543210","9123456789","9988776655"],
+        "Email" : ["john@example.com","jane@example.com","bob@example.com"]
     })
     st.download_button(
-        label="📥 Download Sample Excel",
-        data=sample_df.to_csv(index=False).encode("utf-8"),
+        "📥 Download Sample Template",
+        data=sample.to_csv(index=False).encode(),
         file_name="MarketAI_Template.csv",
         mime="text/csv",
         use_container_width=True
     )
 
-    uploaded_file = st.file_uploader(
-        "Upload Contacts File",
-        type=["xlsx", "xls", "csv"],
-        help="Upload Excel or CSV with Name, Mobile, Email columns"
-    )
+    uploaded = st.file_uploader("Upload Excel / CSV", type=["xlsx","xls","csv"])
 
     if st.button("🗑️ Clear All Data", use_container_width=True):
-        st.session_state["customers"] = []
-        st.session_state["sending_active"] = False
+        st.session_state["customers"]       = []
+        st.session_state["sending_active"]  = False
         st.rerun()
 
     st.divider()
-    st.header("✉️ Step 2: Message Templates")
+    st.header("✉️ Message Templates")
 
-    send_mode = st.radio(
-        "Send via:",
-        ["📱 WhatsApp", "📧 Email", "📱+📧 Both"],
-        horizontal=False
-    )
+    send_mode = st.radio("Send via:", ["📱 WhatsApp","📧 Email","📱+📧 Both"])
+
+    wa_template = em_subject = em_body = ""
 
     if "WhatsApp" in send_mode or "Both" in send_mode:
-        whatsapp_template = st.text_area(
+        wa_template = st.text_area(
             "WhatsApp Message:",
-            value="Hi {{name}},\n\nWe have a special offer just for you! 🎉\n\nContact us today!",
-            height=120,
-            help="Use {{name}} for customer name, {{sender}} for your business name"
+            "Hi {{name}},\n\nWe have a special offer just for you! 🎉\n\nContact us today!",
+            height=110,
+            help="Use {{name}} and {{sender}}"
         )
 
     if "Email" in send_mode or "Both" in send_mode:
-        email_subject = st.text_input(
-            "Email Subject:",
-            value="Special Offer for {{name}}! 🎉"
-        )
-        email_body = st.text_area(
+        em_subject = st.text_input("Email Subject:", "Special Offer for {{name}}! 🎉")
+        em_body    = st.text_area(
             "Email Body (HTML):",
-            value="<h2>Hi {{name}},</h2>\n<p>We have an <strong>exclusive offer</strong> for you!</p>\n<p>Contact us today! 🚀</p>",
-            height=150,
-            help="Supports HTML formatting"
+            "<h2>Hi {{name}},</h2>\n<p>We have an <strong>exclusive offer</strong> just for you!</p>",
+            height=120
         )
 
     st.divider()
-    st.header("⚙️ Step 3: Speed Settings")
+    st.header("⚙️ Speed Settings")
+    max_hr  = st.slider("Max per hour:", 5, 50, 20)
+    max_day = st.slider("Max per day:",  10, 200, 80)
+    do_vary = st.checkbox("🎲 Randomize messages", True)
 
-    max_per_hour = st.slider("Max messages per hour:", 5, 50, 20, help="Stay under limits to avoid bans")
-    max_per_day = st.slider("Max messages per day:", 10, 200, 80)
-    add_variations = st.checkbox("🎲 Randomize messages", True, help="Adds slight variations to avoid spam detection")
-
-    st.divider()
-    st.caption(f"🏢 {sender_name} | 📧 {gmail_user}")
-
-# ── File Upload Processing ─────────────────────────
-if uploaded_file and not st.session_state["customers"]:
+# ── FILE UPLOAD PROCESSING ────────────────────────────
+if uploaded and not st.session_state["customers"]:
     try:
         with st.spinner("Reading file..."):
-            if uploaded_file.name.endswith(".csv"):
-                df = pd.read_csv(uploaded_file)
+            if uploaded.name.endswith(".csv"):
+                df = pd.read_csv(uploaded)
             else:
-                df = pd.read_excel(uploaded_file, engine="openpyxl")
+                df = pd.read_excel(uploaded, engine="openpyxl")
 
-        is_valid, msg, mapping = detect_columns(df)
+        ok, info, mapping = detect_columns(df)
 
-        if is_valid:
-            st.success(msg)
-
-            # Preview
-            with st.expander("👀 Preview Data (first 5 rows)", expanded=True):
-                # Show with detected columns highlighted
-                display_cols = [v for v in mapping.values()]
+        if ok:
+            st.success(info)
+            with st.expander("👀 Preview (first 5 rows)", expanded=True):
                 st.dataframe(df.head(5), use_container_width=True)
-                st.caption(f"📊 Total rows: **{len(df)}**")
+                st.caption(f"Total rows: **{len(df)}**")
 
-            col_load, col_skip = st.columns(2)
-            with col_load:
-                if st.button("📥 Load All Contacts", use_container_width=True, type="primary"):
-                    customers = process_customers(df, mapping)
-                    if customers:
-                        st.session_state["customers"] = customers
-                        st.success(f"✅ Loaded **{len(customers)}** contacts!")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ No valid contacts found in file.")
+            if st.button("📥 Load Contacts", type="primary", use_container_width=True):
+                custs = process_excel(df, mapping)
+                if custs:
+                    st.session_state["customers"] = custs
+                    st.success(f"✅ Loaded **{len(custs)}** contacts!")
+                    time.sleep(1); st.rerun()
+                else:
+                    st.error("❌ No valid contacts found.")
         else:
-            st.error(msg)
-            with st.expander("🔍 Debug Info"):
-                st.write("Columns found:", list(df.columns))
-                st.dataframe(df.head(3))
+            st.error(info)
 
     except ImportError:
-        st.error("❌ Missing `openpyxl`. Run: `pip install openpyxl`")
+        st.error("❌ Missing `openpyxl`. Add it to requirements.txt")
     except Exception as e:
-        st.error(f"❌ File read error: {e}")
+        st.error(f"❌ File error: {e}")
 
-# ── Main Dashboard ─────────────────────────────────
+# ── DASHBOARD ─────────────────────────────────────────
 if st.session_state["customers"]:
-    customers = st.session_state["customers"]
-    sent_total, sent_hour, sent_today, pending = get_send_stats(customers)
+    custs = st.session_state["customers"]
+    total, sent, per_hr, per_day, pending = get_stats(custs)
 
-    # Stats Row
+    # Metrics
     st.subheader("📊 Campaign Stats")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("👥 Total Contacts", len(customers))
-    c2.metric("✅ Sent Total", sent_total)
-    c3.metric("⏳ Pending", pending)
-    c4.metric("⏱️ Last Hour", f"{sent_hour}/{max_per_hour}")
-    c5.metric("📅 Today", f"{sent_today}/{max_per_day}")
+    m1,m2,m3,m4,m5 = st.columns(5)
+    m1.metric("👥 Total",    total)
+    m2.metric("✅ Sent",     sent)
+    m3.metric("⏳ Pending",  pending)
+    m4.metric("⏱️ This Hour", f"{per_hr}/{max_hr}")
+    m5.metric("📅 Today",    f"{per_day}/{max_day}")
 
-    # Progress bar
-    if len(customers) > 0:
-        progress = sent_total / len(customers)
-        st.progress(progress, text=f"Campaign Progress: {sent_total}/{len(customers)} ({progress*100:.1f}%)")
+    if total:
+        st.progress(sent/total, text=f"Progress: {sent}/{total} ({sent/total*100:.1f}%)")
 
     st.divider()
 
-    # Control Buttons
-    col_start, col_stop, col_reset = st.columns([0.4, 0.3, 0.3])
-    with col_start:
+    # Controls
+    c1, c2, c3 = st.columns([0.4, 0.3, 0.3])
+    with c1:
         if not st.session_state["sending_active"]:
-            if st.button("▶️ START AUTO SENDING", use_container_width=True, type="primary"):
-                if not gmail_user or not gmail_pass:
-                    st.error("❌ Gmail credentials missing. Please update your profile.")
+            if st.button("▶️ START AUTO SENDING", type="primary", use_container_width=True):
+                if not gmail_user:
+                    st.error("❌ Gmail credentials missing in your profile.")
                 else:
                     st.session_state["sending_active"] = True
                     st.rerun()
         else:
-            st.success("🟢 **Sending Active...**")
-
-    with col_stop:
+            st.success("🟢 Sending Active...")
+    with c2:
         if st.session_state["sending_active"]:
-            if st.button("⏹️ PAUSE SENDING", use_container_width=True, type="secondary"):
-                st.session_state["sending_active"] = False
-                st.rerun()
+            if st.button("⏸️ Pause", use_container_width=True):
+                st.session_state["sending_active"] = False; st.rerun()
+    with c3:
+        if st.button("🔄 Reset Sent", use_container_width=True):
+            for c in custs:
+                c.update({"whatsapp_sent":False,"email_sent":False,"sent_at":None,"error":None})
+            st.session_state["sending_active"] = False; st.rerun()
 
-    with col_reset:
-        if st.button("🔄 Reset Sent Status", use_container_width=True):
-            for c in customers:
-                c["whatsapp_sent"] = False
-                c["email_sent"] = False
-                c["sent_at"] = None
-                c["error"] = None
-            st.session_state["sending_active"] = False
-            st.rerun()
-
-    # ── SENDING LOOP ──────────────────────────────
+    # ── SEND LOOP ──────────────────────────────────────
     if st.session_state["sending_active"]:
-        # Check limits
-        if sent_hour >= max_per_hour:
+        if per_hr  >= max_hr:
             st.session_state["sending_active"] = False
-            st.warning(f"⚠️ Hourly limit reached ({max_per_hour}/hr). Auto-paused. Try again later.")
-            st.rerun()
-
-        if sent_today >= max_per_day:
+            st.warning(f"⚠️ Hourly limit ({max_hr}) reached. Paused."); st.rerun()
+        if per_day >= max_day:
             st.session_state["sending_active"] = False
-            st.warning(f"⚠️ Daily limit reached ({max_per_day}/day). Auto-paused.")
-            st.rerun()
+            st.warning(f"⚠️ Daily limit ({max_day}) reached. Paused."); st.rerun()
 
-        # Find next unsent contact
-        next_contact = None
-        wa_mode = "WhatsApp" in send_mode or "Both" in send_mode
-        email_mode = "Email" in send_mode or "Both" in send_mode
+        do_wa    = "WhatsApp" in send_mode or "Both" in send_mode
+        do_email = "Email"    in send_mode or "Both" in send_mode
 
-        for c in customers:
-            needs_wa = wa_mode and c["mobile"] and not c["whatsapp_sent"]
-            needs_email = email_mode and c["email"] and not c["email_sent"]
-            if needs_wa or needs_email:
-                next_contact = c
-                break
+        nxt = next((
+            c for c in custs
+            if (do_wa    and c["mobile"] and not c["whatsapp_sent"])
+            or (do_email and c["email"]  and not c["email_sent"])
+        ), None)
 
-        if next_contact:
-            status_placeholder = st.empty()
-            status_placeholder.info(f"📤 Sending to: **{next_contact['name']}**...")
+        if nxt:
+            st.info(f"📤 Sending to **{nxt['name']}**...")
 
-            # Send WhatsApp
-            if wa_mode and next_contact["mobile"] and not next_contact["whatsapp_sent"]:
-                if add_variations:
-                    msg_text = humanize_message(whatsapp_template, next_contact["name"], sender_name)
+            if do_wa and nxt["mobile"] and not nxt["whatsapp_sent"]:
+                msg = humanize_whatsapp(wa_template, nxt["name"], sender_name) if do_vary \
+                      else wa_template.replace("{{name}}", nxt["name"])
+                ok, resp = send_whatsapp(nxt["mobile"], msg)
+                nxt["whatsapp_sent"] = ok
+                if not ok: nxt["error"] = resp; st.warning(resp)
+
+            if do_email and nxt["email"] and not nxt["email_sent"]:
+                if do_vary:
+                    subj, body = humanize_email(em_body, nxt["name"], em_subject, sender_name)
                 else:
-                    msg_text = whatsapp_template.replace("{{name}}", next_contact["name"])
+                    subj = em_subject.replace("{{name}}", nxt["name"])
+                    body = em_body.replace("{{name}}", nxt["name"])
+                ok, resp = send_email_smtp(nxt["email"], subj, body, gmail_user, gmail_pass, sender_name)
+                nxt["email_sent"] = ok
+                if not ok: nxt["error"] = resp; st.warning(resp)
 
-                ok, resp = send_whatsapp(next_contact["mobile"], msg_text)
-                next_contact["whatsapp_sent"] = ok
-                if not ok:
-                    next_contact["error"] = resp
-                    status_placeholder.warning(f"⚠️ WhatsApp to {next_contact['name']}: {resp}")
+            if nxt["whatsapp_sent"] or nxt["email_sent"]:
+                nxt["sent_at"] = datetime.now()
 
-            # Send Email
-            if email_mode and next_contact["email"] and not next_contact["email_sent"]:
-                if add_variations:
-                    subj, body = humanize_email(email_body, next_contact["name"], email_subject, sender_name)
-                else:
-                    subj = email_subject.replace("{{name}}", next_contact["name"])
-                    body = email_body.replace("{{name}}", next_contact["name"])
-
-                ok, resp = send_email(next_contact["email"], subj, body, gmail_user, gmail_pass, sender_name)
-                next_contact["email_sent"] = ok
-                if not ok:
-                    next_contact["error"] = resp
-                    status_placeholder.warning(f"⚠️ Email to {next_contact['name']}: {resp}")
-
-            # Update sent time
-            if next_contact["whatsapp_sent"] or next_contact["email_sent"]:
-                next_contact["sent_at"] = datetime.now()
-                status_placeholder.success(f"✅ Sent to **{next_contact['name']}** successfully!")
-
-            # Human delay
             delay = random.randint(HUMAN_DELAY_MIN, HUMAN_DELAY_MAX)
-            with st.spinner(f"⏳ Waiting {delay}s before next send (human-like delay)..."):
+            with st.spinner(f"⏳ Waiting {delay}s (human delay)..."):
                 time.sleep(delay)
-
             st.rerun()
 
         else:
-            # All done!
             st.session_state["sending_active"] = False
-            st.success("🎉 Campaign Complete! All messages sent.")
-            st.balloons()
-            st.rerun()
+            st.success("🎉 All messages sent!")
+            st.balloons(); st.rerun()
 
-    # ── Contact Table ──────────────────────────────
+    # ── CONTACT TABLE ──────────────────────────────────
     st.divider()
-    st.subheader("📋 Contact List")
+    st.subheader("📋 Contacts")
 
-    # Filter options
-    filter_col1, filter_col2 = st.columns(2)
-    with filter_col1:
-        status_filter = st.selectbox(
-            "Filter by status:",
-            ["All", "✅ Sent", "⏳ Pending", "❌ Failed"]
-        )
-    with filter_col2:
-        search_term = st.text_input("🔍 Search by name/email/phone:", placeholder="Search...")
+    fa, fb = st.columns(2)
+    with fa:
+        filt = st.selectbox("Filter:", ["All","✅ Sent","⏳ Pending","❌ Failed"])
+    with fb:
+        srch = st.text_input("🔍 Search:", placeholder="name / email / phone")
 
-    # Apply filters
-    filtered = customers.copy()
-    if status_filter == "✅ Sent":
-        filtered = [c for c in filtered if c["whatsapp_sent"] or c["email_sent"]]
-    elif status_filter == "⏳ Pending":
-        filtered = [c for c in filtered if not c["whatsapp_sent"] and not c["email_sent"]]
-    elif status_filter == "❌ Failed":
-        filtered = [c for c in filtered if c.get("error")]
+    shown = custs
+    if filt == "✅ Sent":    shown = [c for c in custs if c["whatsapp_sent"] or c["email_sent"]]
+    elif filt == "⏳ Pending": shown = [c for c in custs if not c["whatsapp_sent"] and not c["email_sent"]]
+    elif filt == "❌ Failed":  shown = [c for c in custs if c.get("error")]
 
-    if search_term:
-        st._lower = search_term.lower()
-        filtered = [
-            c for c in filtered
-            if search_term.lower() in c["name"].lower()
-            or search_term.lower() in c["email"].lower()
-            or search_term.lower() in c["mobile"]
-        ]
+    if srch:
+        sl = srch.lower()
+        shown = [c for c in shown if sl in c["name"].lower()
+                 or sl in c["email"].lower() or sl in c["mobile"]]
 
-    # Build display DataFrame
-    table_data = []
-    for c in filtered[:100]:  # Show max 100 rows
-        table_data.append({
-            "Name": c["name"],
-            "Mobile": c["mobile"] or "—",
-            "Email": c["email"] or "—",
-            "WhatsApp": "✅" if c["whatsapp_sent"] else "⏳",
-            "Email Sent": "✅" if c["email_sent"] else "⏳",
-            "Sent At": c["sent_at"].strftime("%H:%M:%S") if c.get("sent_at") else "—",
-            "Error": c.get("error") or "—",
-        })
+    table = [{
+        "Name"    : c["name"],
+        "Mobile"  : c["mobile"] or "—",
+        "Email"   : c["email"]  or "—",
+        "WhatsApp": "✅" if c["whatsapp_sent"] else "⏳",
+        "Email"   : "✅" if c["email_sent"]    else "⏳",
+        "Sent At" : c["sent_at"].strftime("%H:%M:%S") if c.get("sent_at") else "—",
+        "Error"   : c.get("error") or "—",
+    } for c in shown[:100]]
 
-    if table_data:
-        st.dataframe(pd.DataFrame(table_data), use_container_width=True, height=400)
-        if len(filtered) > 100:
-            st.caption(f"Showing 100 of {len(filtered)} contacts.")
+    if table:
+        st.dataframe(pd.DataFrame(table), use_container_width=True, height=380)
+        if len(shown) > 100:
+            st.caption(f"Showing 100 of {len(shown)}")
     else:
-        st.info("No contacts match the filter.")
+        st.info("No matching contacts.")
 
-    # Export results
-    if sent_total > 0:
-        st.divider()
-        export_df = pd.DataFrame([{
-            "Name": c["name"],
-            "Mobile": c["mobile"],
-            "Email": c["email"],
-            "WhatsApp Sent": c["whatsapp_sent"],
-            "Email Sent": c["email_sent"],
-            "Sent At": str(c.get("sent_at") or ""),
-            "Error": c.get("error") or ""
-        } for c in customers])
+    # Export
+    if sent > 0:
+        export = pd.DataFrame([{
+            "Name"        : c["name"],
+            "Mobile"      : c["mobile"],
+            "Email"       : c["email"],
+            "WA Sent"     : c["whatsapp_sent"],
+            "Email Sent"  : c["email_sent"],
+            "Sent At"     : str(c.get("sent_at") or ""),
+            "Error"       : c.get("error") or ""
+        } for c in custs])
 
         st.download_button(
-            label="📥 Export Results CSV",
-            data=export_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"MarketAI_Results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "📥 Export Results CSV",
+            data=export.to_csv(index=False).encode(),
+            file_name=f"MarketAI_Results_{datetime.now():%Y%m%d_%H%M}.csv",
             mime="text/csv",
             use_container_width=True
         )
 
 else:
-    # Empty state
     st.markdown("""
-    <div style="text-align:center; padding: 60px; color: #666;">
-        <h2>📁 No Contacts Loaded</h2>
-        <p>Upload an Excel/CSV file using the sidebar to get started.</p>
-        <p>Download the sample template to see the required format.</p>
+    <div style='text-align:center;padding:60px;color:#888'>
+        <h2>📁 No Contacts Loaded Yet</h2>
+        <p>Upload an Excel or CSV file from the sidebar to get started.</p>
+        <p>Download the sample template to see the expected format.</p>
     </div>
     """, unsafe_allow_html=True)
